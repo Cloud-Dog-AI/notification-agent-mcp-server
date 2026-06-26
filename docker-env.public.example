@@ -1,0 +1,86 @@
+############################################################
+# notification-agent-mcp-server — Docker Environment (PS-97 v1.1 §1.1.4 PUBLIC variant)
+#
+# PUBLIC variant — for external / GitHub-boundary deployments.
+# Uses *.example.com placeholders with <SET_*> tokens; no real secrets and no
+# internal Cloud-Dog hosts. Copy to a local env file and fill in real endpoints
+# and secrets before running:
+#   docker run --rm --network host \
+#     -v "$PWD/your-env:/app/env:ro" \
+#     cloud-dog/notification-agent-mcp-server:latest
+#
+# License: Apache-2.0 (C) Cloud-Dog, Viewdeck Engineering Ltd.
+############################################################
+
+# ── Database (default: local SQLite) ─────────────────────────────
+CLOUD_DOG__NOTIFY__DB__URI=sqlite3://./database/notify.db
+# For MariaDB/MySQL:
+# CLOUD_DOG__NOTIFY__DB__URI=mysql+pymysql://notify:<SET_DB_PASSWORD>@db.example.com:3306/notification_server
+
+# ── Default channel + auth ───────────────────────────────────────
+CLOUD_DOG__NOTIFY__DEFAULT_CHANNEL=email
+CLOUD_DOG__NOTIFY__AUTH__JWT_SECRET=<SET_JWT_SECRET>
+
+# ── API server ───────────────────────────────────────────────────
+CLOUD_DOG__NOTIFY__API_SERVER__HOST=0.0.0.0
+CLOUD_DOG__NOTIFY__API_SERVER__PORT=8083
+CLOUD_DOG__NOTIFY__API_SERVER__BASE_URL=http://localhost:8083
+CLOUD_DOG__NOTIFY__API_SERVER__API_KEY=<SET_API_KEY>
+CLOUD_DOG__NOTIFY__WEBHOOK__SECRET=<SET_WEBHOOK_SECRET>
+
+# ── Web UI server ────────────────────────────────────────────────
+CLOUD_DOG__NOTIFY__WEB_SERVER__HOST=0.0.0.0
+CLOUD_DOG__NOTIFY__WEB_SERVER__PORT=8080
+CLOUD_DOG__NOTIFY__WEB_SERVER__BASE_URL=http://localhost:8080
+CLOUD_DOG__NOTIFY__WEB_SERVER__API_BASE_URL=http://localhost:8083
+CLOUD_DOG__NOTIFY__WEB_SERVER__USERNAME=<SET_WEB_USERNAME>
+CLOUD_DOG__NOTIFY__WEB_SERVER__PASSWORD=<SET_WEB_PASSWORD>
+CLOUD_DOG__NOTIFY__WEB_SERVER__SESSION_MAX_AGE=3600
+
+# ── MCP server ───────────────────────────────────────────────────
+CLOUD_DOG__NOTIFY__MCP_SERVER__HOST=0.0.0.0
+CLOUD_DOG__NOTIFY__MCP_SERVER__PORT=8081
+CLOUD_DOG__NOTIFY__MCP_SERVER__BASE_URL=http://localhost:8081
+CLOUD_DOG__NOTIFY__MCP_SERVER__API_BASE_URL=http://localhost:8083
+CLOUD_DOG__NOTIFY__MCP_SERVER__API_KEY=<SET_API_KEY>
+CLOUD_DOG__NOTIFY__MCP_SERVER__TRANSPORT=streamable_http
+CLOUD_DOG__NOTIFY__MCP_SERVER__STREAMABLE_HTTP_PATH=/mcp
+CLOUD_DOG__NOTIFY__MCP_SERVER__SESSION_TTL_SECONDS=3600
+CLOUD_DOG__NOTIFY__MCP_SERVER__TLS=false
+
+# ── A2A server ───────────────────────────────────────────────────
+CLOUD_DOG__NOTIFY__A2A_SERVER__HOST=0.0.0.0
+CLOUD_DOG__NOTIFY__A2A_SERVER__PORT=8082
+CLOUD_DOG__NOTIFY__A2A_SERVER__BASE_URL=http://localhost:8082
+
+# ── LLM (default: OpenAI-compatible public endpoint; pass key at runtime) ──
+CLOUD_DOG__NOTIFY__LLM__PROVIDER=openai
+CLOUD_DOG__NOTIFY__LLM__BASE_URL=https://llm.example.com/v1
+CLOUD_DOG__NOTIFY__LLM__MODEL=<SET_LLM_MODEL>
+CLOUD_DOG__NOTIFY__LLM__TEMPERATURE=0.1
+CLOUD_DOG__NOTIFY__LLM__MAX_TOKENS=32768
+
+# ── SMTP channel (placeholders for smoke; set your own for real delivery) ──
+CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__HOST=smtp.example.com
+CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__PORT=587
+CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__USERNAME=<SET_SMTP_USERNAME>
+CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__PASSWORD=<SET_SMTP_PASSWORD>
+
+# ── Storage (default: local) ─────────────────────────────────────
+CLOUD_DOG__NOTIFY__STORAGE__BACKEND=local
+CLOUD_DOG__NOTIFY__STORAGE__LOCAL__BASE_PATH=/app/storage
+CLOUD_DOG__NOTIFY__STORAGE__LOCAL__BASE_URL=http://localhost:8083/storage
+
+# ── TLS trust (optional CA bundle for outbound HTTPS) ────────────
+# SSL_CERT_FILE=/app/certs/ca.crt
+# REQUESTS_CA_BUNDLE=/app/certs/ca.crt
+
+# ── Corporate proxy (optional) ───────────────────────────────────
+HTTP_PROXY=
+HTTPS_PROXY=
+NO_PROXY=127.0.0.1,localhost,.example.com
+
+# ── Logging ──────────────────────────────────────────────────────
+CLOUD_DOG__NOTIFY__LOG__LEVEL=INFO
+CLOUD_DOG__NOTIFY__LOG__FORMAT=json
+CLOUD_DOG__NOTIFY__LOG__CONSOLE=true

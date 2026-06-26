@@ -1,0 +1,17 @@
+# .docs-manifest.yml - notification-agent-mcp-server
+schema-version: 1.0
+project: notification-agent-mcp-server
+canon-set: SERVICE
+canon-template-baseline: 1.0
+
+conditional-docs:
+  - filename: WEBUI-REFERENCE.md
+    template-id: T-WUI
+
+additional-docs:
+  - filename: PROMPTS.md
+    template-id: T-PRM
+  - filename: LLM-VARIANTS.md
+    template-id: T-LLM
+  - filename: LLM-TEST-RESULTS.md
+    template-id: T-LLT

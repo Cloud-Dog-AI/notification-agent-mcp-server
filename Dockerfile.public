@@ -1,0 +1,131 @@
+# syntax=docker/dockerfile:1
+# notification-agent-mcp-server — Dockerfile.public (PS-97 v1.1 §1.1.3)
+#
+# PUBLIC variant — for external / GitHub-boundary builds (e.g. ghcr.io, Docker Hub).
+# Uses the active package index supplied by the build environment via the
+# PIP_INDEX_URL build ARG (default: public PyPI). It NEVER hardcodes an internal
+# Cloud-Dog host and NEVER uses --extra-index-url (PS-97 v1.1 §3.3 / §4 forbid both).
+#
+# Development / Gitea-boundary builds use the separate `Dockerfile` (internal
+# variant). Select the public path via: docker-build.sh --variant public
+#
+# NOTE: platform packages (cloud-dog-config, cloud-dog-logging, cloud-dog-api-kit,
+# cloud-dog-idam, cloud-dog-db, cloud-dog-jobs, cloud-dog-llm, cloud-dog-cache,
+# cloud-dog-storage) MUST be available on the supplied PIP_INDEX_URL (e.g. pypi.org
+# under the Cloud-Dog-External namespace, or installed from the GitHub-mirrored
+# source) before this Dockerfile can build end-to-end. That publish step is tracked
+# separately in the publication loop (W28A-862-R3 / W28A-865 family).
+
+# ── Builder ──────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+ARG HTTP_PROXY="" HTTPS_PROXY="" NO_PROXY="" http_proxy="" https_proxy="" no_proxy=""
+ENV HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} NO_PROXY=${NO_PROXY} \
+    http_proxy=${http_proxy} https_proxy=${https_proxy} no_proxy=${no_proxy}
+
+# Active package index for the public boundary (default: public PyPI).
+# Override at build time only with another *public* index (e.g. GitHub Packages).
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+WORKDIR /app
+
+# Build toolchain + native libs needed by weasyprint / cairo / pango (PDF + i18n).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates gcc \
+    libcairo2 libgdk-pixbuf-2.0-0 libglib2.0-0 libffi8 \
+    libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
+    libharfbuzz0b libharfbuzz-subset0 libfribidi0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Public build — no private CA overlay. The system ca-certificates trust store is
+# sufficient for public or boundary-provided package indexes.
+
+COPY pyproject.toml README.md requirements.txt ./
+COPY src/ ./src/
+
+# Single index only (PS-97 §3.3): no --extra-index-url, no find-links, no vendored
+# wheels. Platform + transitive deps resolve from a single index.
+#
+# The active index — and, for an authenticated boundary index, its credentials —
+# is supplied exclusively via the pip.conf secret mounted at /etc/pip.conf
+# (`[global] index-url = ...`). docker-build.sh writes that single index-url
+# (public default https://pypi.org/simple, or the authenticated internal/main
+# index, with credentials embedded in the URL, when PYPI_USERNAME/PYPI_PASSWORD
+# are provided).
+#
+# pip honours credentials embedded in an index-url supplied on the COMMAND LINE,
+# but does NOT reliably apply credentials embedded in an index-url read from a
+# config file (pip 25.x strips them and then blocks on an interactive
+# "User for <host>:" prompt → EOFError under BuildKit). So we read the single
+# index-url out of the mounted pip.conf secret and pass it on the command line
+# within the same RUN. The credential never lands in a build ARG or image layer:
+# it lives only in the in-memory secret mount for the duration of the RUN.
+RUN --mount=type=secret,id=pip_conf,target=/etc/pip.conf \
+    INDEX_URL="$(sed -n 's/^[[:space:]]*index-url[[:space:]]*=[[:space:]]*//p' /etc/pip.conf | head -n1)" && \
+    if [ -z "${INDEX_URL}" ]; then echo "ERROR: no index-url in pip.conf secret" >&2; exit 3; fi && \
+    pip install --no-cache-dir --index-url "${INDEX_URL}" \
+      cloud-dog-config \
+      cloud-dog-logging \
+      "cloud-dog-api-kit==0.13.0" \
+      "cloud-dog-idam>=0.5.2,<0.6" \
+      cloud-dog-db \
+      "cloud-dog-jobs==0.4.1" \
+      cloud-dog-llm \
+      cloud-dog-cache \
+      cloud-dog-storage && \
+    pip install --no-cache-dir --index-url "${INDEX_URL}" -r requirements.txt && \
+    pip install --no-cache-dir --index-url "${INDEX_URL}" .
+
+# ── Final ────────────────────────────────────────────────────────
+FROM python:3.12-slim
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.vendor="Cloud-Dog, Viewdeck Engineering Limited"
+LABEL org.opencontainers.image.source="https://github.com/cloud-dog-ai/notification-agent-mcp-server"
+
+ARG HTTP_PROXY="" HTTPS_PROXY="" NO_PROXY="" http_proxy="" https_proxy="" no_proxy=""
+ENV HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} NO_PROXY=${NO_PROXY} \
+    http_proxy=${http_proxy} https_proxy=${https_proxy} no_proxy=${no_proxy}
+
+# Runtime native libs for weasyprint / cairo / pango + fonts + diagnostics.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl net-tools procps lsof \
+    libcairo2 libgdk-pixbuf-2.0-0 libglib2.0-0 libffi8 \
+    libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
+    libharfbuzz0b libharfbuzz-subset0 libfribidi0 \
+    shared-mime-info fonts-dejavu-core fonts-noto-core fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Public runtime — no private CA overlay.
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY ui/ ./ui/
+COPY database/ ./database/
+COPY defaults.yaml .
+COPY env.example ./env.example
+COPY start_*.py ./
+COPY server_control.sh ./server_control.sh
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+COPY docker-healthcheck.sh ./docker-healthcheck.sh
+
+RUN mkdir -p logs cache database storage working certs && \
+    chmod +x /app/server_control.sh /app/docker-entrypoint.sh /app/docker-healthcheck.sh
+
+RUN useradd -m -u 10001 notifyuser && \
+    chown -R notifyuser:notifyuser /app
+USER notifyuser
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app/src
+
+EXPOSE 8083 8080 8081 8082
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+    CMD /app/docker-healthcheck.sh
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["all"]

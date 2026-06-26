@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  # API Server
+  api:
+    build:
+      context: .
+      network: host
+    container_name: notify-api
+    network_mode: host
+    environment:
+      - CLOUD_DOG__NOTIFY__API_SERVER__PORT=${CLOUD_DOG__NOTIFY__API_SERVER__PORT}
+      - CLOUD_DOG__NOTIFY__API_SERVER__HOST=${CLOUD_DOG__NOTIFY__API_SERVER__HOST}
+      - CLOUD_DOG__NOTIFY__DB__URI=${CLOUD_DOG__NOTIFY__DB__URI}
+      - CLOUD_DOG__NOTIFY__API_SERVER__API_KEY=${CLOUD_DOG__NOTIFY__API_SERVER__API_KEY}
+      - CLOUD_DOG__NOTIFY__DEFAULT_CHANNEL=${CLOUD_DOG__NOTIFY__DEFAULT_CHANNEL}
+      - CLOUD_DOG__NOTIFY__LLM__BASE_URL=${CLOUD_DOG__NOTIFY__LLM__BASE_URL}
+      - CLOUD_DOG__NOTIFY__LLM__MODEL=${CLOUD_DOG__NOTIFY__LLM__MODEL}
+      - CLOUD_DOG__NOTIFY__LOG__LEVEL=${CLOUD_DOG__NOTIFY__LOG__LEVEL}
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - VAULT_MOUNT_POINT=${VAULT_MOUNT_POINT}
+      - VAULT_CONFIG_PATH=${VAULT_CONFIG_PATH}
+    volumes:
+      - ./database:/app/database
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+      - ./storage:/app/storage
+      - ${ENV_FILE}:/app/env:ro
+    command: api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${CLOUD_DOG__NOTIFY__API_SERVER__PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Web UI Server
+  web:
+    build:
+      context: .
+      network: host
+    container_name: notify-web
+    network_mode: host
+    environment:
+      - CLOUD_DOG__NOTIFY__WEB_SERVER__PORT=${CLOUD_DOG__NOTIFY__WEB_SERVER__PORT}
+      - CLOUD_DOG__NOTIFY__WEB_SERVER__HOST=${CLOUD_DOG__NOTIFY__WEB_SERVER__HOST}
+      - CLOUD_DOG__NOTIFY__WEB_SERVER__API_BASE_URL=${CLOUD_DOG__NOTIFY__WEB_SERVER__API_BASE_URL}
+      - CLOUD_DOG__NOTIFY__WEB_SERVER__USERNAME=${CLOUD_DOG__NOTIFY__WEB_SERVER__USERNAME}
+      - CLOUD_DOG__NOTIFY__WEB_SERVER__PASSWORD=${CLOUD_DOG__NOTIFY__WEB_SERVER__PASSWORD}
+      - CLOUD_DOG__NOTIFY__LOG__LEVEL=${CLOUD_DOG__NOTIFY__LOG__LEVEL}
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - VAULT_MOUNT_POINT=${VAULT_MOUNT_POINT}
+      - VAULT_CONFIG_PATH=${VAULT_CONFIG_PATH}
+    volumes:
+      - ./database:/app/database
+      - ./logs:/app/logs
+      - ${ENV_FILE}:/app/env:ro
+    command: web
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # MCP Server
+  mcp:
+    build:
+      context: .
+      network: host
+    container_name: notify-mcp
+    network_mode: host
+    environment:
+      - CLOUD_DOG__NOTIFY__MCP_SERVER__PORT=${CLOUD_DOG__NOTIFY__MCP_SERVER__PORT}
+      - CLOUD_DOG__NOTIFY__MCP_SERVER__HOST=${CLOUD_DOG__NOTIFY__MCP_SERVER__HOST}
+      - CLOUD_DOG__NOTIFY__MCP_SERVER__API_BASE_URL=${CLOUD_DOG__NOTIFY__MCP_SERVER__API_BASE_URL}
+      - CLOUD_DOG__NOTIFY__MCP_SERVER__API_KEY=${CLOUD_DOG__NOTIFY__MCP_SERVER__API_KEY}
+      - CLOUD_DOG__NOTIFY__LOG__LEVEL=${CLOUD_DOG__NOTIFY__LOG__LEVEL}
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - VAULT_MOUNT_POINT=${VAULT_MOUNT_POINT}
+      - VAULT_CONFIG_PATH=${VAULT_CONFIG_PATH}
+    volumes:
+      - ./logs:/app/logs
+      - ${ENV_FILE}:/app/env:ro
+    command: mcp
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # A2A Server
+  a2a:
+    build:
+      context: .
+      network: host
+    container_name: notify-a2a
+    network_mode: host
+    environment:
+      - CLOUD_DOG__NOTIFY__A2A_SERVER__PORT=${CLOUD_DOG__NOTIFY__A2A_SERVER__PORT}
+      - CLOUD_DOG__NOTIFY__A2A_SERVER__HOST=${CLOUD_DOG__NOTIFY__A2A_SERVER__HOST}
+      - CLOUD_DOG__NOTIFY__A2A_SERVER__API_BASE_URL=${CLOUD_DOG__NOTIFY__A2A_SERVER__API_BASE_URL}
+      - CLOUD_DOG__NOTIFY__DB__URI=${CLOUD_DOG__NOTIFY__DB__URI}
+      - CLOUD_DOG__NOTIFY__API_SERVER__API_KEY=${CLOUD_DOG__NOTIFY__API_SERVER__API_KEY}
+      - CLOUD_DOG__NOTIFY__API_SERVER__BASE_URL=${CLOUD_DOG__NOTIFY__API_SERVER__BASE_URL}
+      - CLOUD_DOG__NOTIFY__DEFAULT_CHANNEL=${CLOUD_DOG__NOTIFY__DEFAULT_CHANNEL}
+      - CLOUD_DOG__NOTIFY__LOG__LEVEL=${CLOUD_DOG__NOTIFY__LOG__LEVEL}
+      - VAULT_ADDR=${VAULT_ADDR}
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - VAULT_MOUNT_POINT=${VAULT_MOUNT_POINT}
+      - VAULT_CONFIG_PATH=${VAULT_CONFIG_PATH}
+    volumes:
+      - ./database:/app/database
+      - ./logs:/app/logs
+      - ${ENV_FILE}:/app/env:ro
+    command: a2a
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  database:
+  logs:
+  cache:
+  storage:

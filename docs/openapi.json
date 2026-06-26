@@ -1,0 +1,400 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Notification Agent API",
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "{api_base_url}",
+      "variables": {
+        "api_base_url": {
+          "default": ""
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "Service banner",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Service status",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/messages": {
+      "post": {
+        "summary": "Create and enqueue a notification",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted"
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        }
+      }
+    },
+    "/messages/{id}": {
+      "get": {
+        "summary": "Get a message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        }
+      }
+    },
+    "/messages/{id}/deliveries": {
+      "get": {
+        "summary": "List deliveries for a message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/messages/{id}/cancel": {
+      "post": {
+        "summary": "Cancel pending deliveries for a message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled"
+          }
+        }
+      }
+    },
+    "/deliveries/{id}/resend": {
+      "post": {
+        "summary": "Resend a delivery",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resent"
+          }
+        }
+      }
+    },
+    "/deliveries/{id}/abort": {
+      "post": {
+        "summary": "Abort a delivery",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aborted"
+          }
+        }
+      }
+    },
+    "/channels": {
+      "get": {
+        "summary": "List channels",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a channel",
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/channels/{id}": {
+      "patch": {
+        "summary": "Update a channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          }
+        }
+      }
+    },
+    "/channels/{id}/test": {
+      "post": {
+        "summary": "Send a test via a channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/callbacks/email": {
+      "post": {
+        "summary": "Email callback",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/callbacks/sms": {
+      "post": {
+        "summary": "SMS callback",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/callbacks/whatsapp": {
+      "post": {
+        "summary": "WhatsApp callback",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/callbacks/chat": {
+      "post": {
+        "summary": "Chat callback",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/providers/poll/{channel_id}": {
+      "post": {
+        "summary": "Trigger provider polling",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateMessage": {
+        "type": "object",
+        "required": [
+          "audience_type",
+          "content"
+        ],
+        "properties": {
+          "audience_type": {
+            "type": "string",
+            "enum": [
+              "broadcast",
+              "personalised"
+            ]
+          },
+          "destinations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "address": {
+                  "type": "string"
+                },
+                "preferences": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "body"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "md",
+                    "json",
+                    "media"
+                  ]
+                },
+                "body": {}
+              }
+            }
+          },
+          "template_ref": {
+            "type": "string",
+            "nullable": true
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "ttl_hours": {
+                "type": "integer",
+                "default": 24
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "confirmation_level": {
+                "type": "string",
+                "enum": [
+                  "sent",
+                  "delivered",
+                  "delivered_or_read"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

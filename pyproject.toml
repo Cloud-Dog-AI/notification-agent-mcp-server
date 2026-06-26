@@ -1,0 +1,108 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notification-agent-mcp-server"
+version = "0.1.1RC1"
+description = "Cloud-Dog notification backend with REST, MCP, A2A, and web admin interfaces"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Cloud-Dog, Viewdeck Engineering Limited" }
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent"
+]
+dependencies = [
+  "fastapi==0.111.0",
+  "uvicorn[standard]==0.31.1",
+  "python-multipart==0.0.20",
+  "websockets==12.0",
+  "jinja2==3.1.2",
+  "itsdangerous==2.1.2",
+  "starlette==0.37.2",
+  "sqlalchemy==2.0.23",
+  "aiosqlite==0.19.0",
+  "pymysql==1.1.2",
+  "psycopg==3.3.2",
+  "httpx==0.28.1",
+  "requests==2.31.0",
+  "aiosmtplib==3.0.1",
+  "email-validator==2.1.0",
+  "pyyaml==6.0.1",
+  "python-dotenv==1.0.0",
+  "pydantic>=2.7.4",
+  "pydantic-settings>=2.1.0",
+  "cloud_dog_config>=0.3.1",
+  "cloud_dog_logging>=0.3.3",
+  "cloud_dog_api_kit==0.13.0",
+  "cloud_dog_idam>=0.5.2,<0.6",
+  "cloud_dog_jobs==0.4.1",
+  "cloud_dog_llm==0.3.0",
+  "cloud_dog_cache>=0.1.1",
+  "cloud_dog_storage>=0.1.4",
+  "cloud_dog_db>=0.1.0",
+  "hvac>=2.4.0",
+  "passlib[bcrypt]==1.7.4",
+  "python-jose[cryptography]==3.3.0",
+  "bcrypt==4.1.1",
+  "mcp>=1.24.0",
+  "langchain==0.3.7",
+  "langchain-community==0.3.5",
+  "langchain-core==0.3.15",
+  "langchain-openai==0.2.5",
+  "langchain-anthropic==0.2.3",
+  "langchain-google-genai==2.0.4",
+  "langchain-aws==0.2.3",
+  "langchain-ollama==0.2.0",
+  "python-dateutil==2.8.2",
+  "pytz==2023.3",
+  "reportlab==4.0.7",
+  "weasyprint==60.2",
+  "pydyf==0.10.0",
+  "pypdf==6.6.2",
+  "pdfplumber==0.11.9",
+  "cffi>=1.0.0",
+  "markdown==3.5.1",
+  "mutagen==1.47.0",
+  "boto3==1.40.61",
+  "aioboto3==15.5.0",
+  "aioftp==0.22.3",
+  "langdetect==1.0.9",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "llm: requires live LLM endpoint (Ollama/OpenRouter)",
+    "vdb: requires vector database (Chroma/Qdrant/OpenSearch)",
+    "db: requires relational database (MySQL/PostgreSQL)",
+    "smtp: requires SMTP/IMAP service",
+    "mcp: requires external MCP server(s)",
+    "docker: requires Docker build/run",
+    "pure: no external dependencies",
+    "fast: completes in <10 seconds",
+    "slow: takes 10-120 seconds",
+    "heavy: takes >120 seconds",
+    "quality: QT tier",
+    "unit: UT tier",
+    "system: ST tier",
+    "integration: IT tier",
+    "application: AT tier",
+]
+
+[project.urls]
+"Source" = "https://github.com/cloud-dog-ai/notification-agent-mcp-server"

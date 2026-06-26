@@ -1,0 +1,12 @@
+This is a test message for the notification system. It contains multiple paragraphs to test the LLM's ability to process and format content.
+
+The notification system needs to support various features including translation, formatting, and summarization. This test content is designed to verify that the LLM can handle these tasks correctly.
+
+When translating, the LLM should convert all text to the target language while preserving the meaning and structure. When formatting, the LLM should apply appropriate markdown or HTML formatting to make the content more readable.
+
+The system also needs to support summarization, where long content is condensed into shorter versions while retaining key information. This is particularly useful for channels with character limits or when users prefer brief summaries.
+
+Finally, the system should be able to combine multiple operations, such as translating content to French and formatting it as Markdown simultaneously. This requires the LLM to follow multiple instructions correctly.
+
+This test content provides enough material to verify all these capabilities work as expected.
+

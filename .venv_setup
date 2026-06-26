@@ -1,0 +1,24 @@
+#!/bin/bash
+# CRITICAL: ALWAYS USE THIS VENV FOR ALL OPERATIONS
+# Location: /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server/venv
+# 
+# This venv contains all dependencies and avoids system library conflicts
+#
+# To activate:
+#   cd /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server
+#   source venv/bin/activate
+#
+# To run API server:
+#   source venv/bin/activate
+#   python start_api_server.py --env private/env-test
+#
+# To run tests:
+#   source venv/bin/activate
+#   pytest test/application/AT1.4_Comprehensive/ --env private/env-test -v
+#
+# NEVER run Python commands without activating venv first!
+
+cd /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server
+source venv/bin/activate
+echo "✅ venv activated: $(which python)"
+

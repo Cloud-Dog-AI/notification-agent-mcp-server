@@ -1,0 +1,24 @@
+# Simple LLM Test Environment
+# Test different settings against qwen3:14b to find optimal prompt instruction following
+
+# LLM Server
+CLOUD_DOG__NOTIFY__LLM__PROVIDER=ollama
+CLOUD_DOG__NOTIFY__LLM__MODEL=qwen3:14b
+CLOUD_DOG__NOTIFY__LLM__BASE_URL=<LLM_BASE_URL>
+CLOUD_DOG__NOTIFY__LLM__IGNORE_TLS=true
+
+# Test Settings - ADJUST THESE
+CLOUD_DOG__NOTIFY__LLM__TEMPERATURE=0.1
+CLOUD_DOG__NOTIFY__LLM__NUM_PREDICT=2048
+CLOUD_DOG__NOTIFY__LLM__TOP_P=1.0
+CLOUD_DOG__NOTIFY__LLM__TOP_K=0
+CLOUD_DOG__NOTIFY__LLM__REPEAT_PENALTY=1.0
+CLOUD_DOG__NOTIFY__LLM__SEED=
+
+# Timeouts
+CLOUD_DOG__NOTIFY__LLM__QUERY_TIMEOUT=60
+CLOUD_DOG__NOTIFY__LLM__FORMATTING_TIMEOUT=60
+
+# Test Prompt
+LLM_TEST_PROMPT="You are a message formatter. Format this message professionally for email delivery. CRITICAL: Add the tag [TEST_TAG_FOUND] at the very start of the body text. Then format the message."
+LLM_TEST_CONTENT="This is a test message to validate prompt instruction following."

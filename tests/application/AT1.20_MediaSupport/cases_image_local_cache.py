@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+# Copyright 2026 Cloud-Dog, Viewdeck Engineering Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Application Tests for Image Local Cache"""
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from tests.utils.test_helpers import check_test_dependencies
+from src.core.media.image_cache import ImageCacheManager
+from src.core.storage.storage_manager import StorageManager
+from src.core.storage.local_storage import LocalStorage
+
+
+@pytest.fixture
+def temp_storage_dir():
+    temp_dir = tempfile.mkdtemp()
+    yield temp_dir
+    import shutil
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def cache_manager(temp_storage_dir, storage_base_url):
+    storage = StorageManager(backend=LocalStorage(base_path=temp_storage_dir), base_url=storage_base_url)
+    return ImageCacheManager(storage_manager=storage)
+
+
+@pytest.fixture
+def temp_image_file():
+    img = Image.new("RGB", (100, 100), color="red")
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    img.save(temp_file, format="PNG")
+    temp_file.close()
+    yield temp_file.name
+    os.unlink(temp_file.name)
+
+
+class TestImageLocalCache:
+    def test_cache_scenario(self, cache_manager, temp_image_file):
+        # CRITICAL: Check dependencies BEFORE any test logic
+        check_test_dependencies(
+            requires_llm=False,
+            requires_smtp=False,
+            requires_slack=False,
+            requires_api=True,
+            test_name="test_cache_scenario",
+        )
+
+        cache_info = cache_manager.cache_image(temp_image_file)
+        assert cache_info is not None
+        cached = cache_manager.get_cached_image(temp_image_file)
+        assert cached is not None
+
+# W28A-202 marker augmentation
+_w28a_202_existing_pytestmark = globals().get("pytestmark", [])
+if not isinstance(_w28a_202_existing_pytestmark, list):
+    _w28a_202_existing_pytestmark = [_w28a_202_existing_pytestmark]
+pytestmark = _w28a_202_existing_pytestmark + [pytest.mark.application, pytest.mark.smtp, pytest.mark.heavy]
+
+
+# --- PS-REQ-TEST-TRACE binding (W28E-1807B) ----------------------------------
+# This AT case-suite drives notification output via the API surface; it is an
+# executable AT-tier test (run under tests/env-AT) bound to its canonical
+# functional requirement so the conftest PS-REQ-TEST-TRACE marker gate collects
+# it. Comment-anchor marker form is sanctioned by tests/conftest.py.
+# @pytest.mark.AT
+# @pytest.mark.api
+# @pytest.mark.req("FR-007")

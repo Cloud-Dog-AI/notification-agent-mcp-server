@@ -1,0 +1,105 @@
+# Notification Agent MCP Server - Python Dependencies
+# Version: 0.1.0
+
+# Platform Packages
+cloud_dog_cache>=0.1.1
+
+# Web Framework
+fastapi==0.111.0
+uvicorn[standard]==0.31.1
+python-multipart==0.0.20
+websockets==12.0
+jinja2==3.1.2
+itsdangerous==2.1.2
+starlette==0.37.2
+
+# Database
+sqlalchemy==2.0.23
+aiosqlite==0.19.0
+pymysql==1.1.2
+psycopg==3.3.2
+
+# HTTP Client
+httpx==0.28.1
+requests==2.31.0
+
+# Email
+aiosmtplib==3.0.1
+email-validator==2.1.0
+
+# Configuration & Environment
+pyyaml==6.0.1
+python-dotenv==1.0.0
+pydantic>=2.7.4
+pydantic-settings>=2.1.0
+cloud_dog_config>=0.3.1
+cloud_dog_logging>=0.3.3
+cloud_dog_api_kit==0.13.0
+cloud_dog_idam>=0.5.2,<0.6
+cloud_dog_jobs==0.4.1
+cloud_dog_llm==0.3.0
+cloud_dog_db>=0.1.0
+cloud_dog_storage>=0.1.4
+hvac>=2.4.0
+
+# Authentication & Security
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+bcrypt==4.1.1
+
+# MCP Protocol
+mcp>=1.24.0
+
+# LLM Integration - LangChain and Providers
+langchain==0.3.7
+langchain-community==0.3.5
+langchain-core==0.3.15
+langchain-openai==0.2.5
+langchain-anthropic==0.2.3
+langchain-google-genai==2.0.4
+langchain-aws==0.2.3
+langchain-ollama==0.2.0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+jinja2==3.1.2
+
+# Logging & Monitoring
+structlog>=21.0.0
+
+# Testing
+pytest>=8.2,<9.0
+pytest-asyncio>=1.0,<2.0
+pytest-cov>=5.0,<6.0
+pytest-timeout>=2.4,<3.0
+playwright>=1.57,<1.61
+
+# Code Quality
+black>=23,<27
+flake8>=7.0,<8.0
+mypy>=1.10,<2.0
+
+reportlab==4.0.7
+weasyprint==60.2
+pydyf==0.10.0
+pypdf==6.6.2
+pdfplumber==0.11.9
+# WeasyPrint dependencies for better multi-language PDF support
+cffi>=1.0.0
+markdown==3.5.1
+
+# Audio/Video Media Support
+mutagen==1.47.0
+
+# Storage Backends
+boto3==1.40.61  # S3-compatible storage (optional - only needed for S3 backend)
+
+# Language Detection
+langdetect==1.0.9  # Professional language detection for translation optimization
+
+# File Channel Storage Backend Dependencies (added 2025-12-21)
+aioboto3==15.5.0  # Async S3 operations
+aioftp==0.22.3  # Async FTP operations
+httpx>=0.28.1  # Already present - used for WebDAV via HTTP methods
+psutil>=5.9

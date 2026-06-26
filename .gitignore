@@ -1,0 +1,121 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+.venv.ps100-backup-*/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs
+logs/*.log
+*.log
+*.log*
+logs/
+
+# Database
+database/*.db
+database/*.db-journal
+database/*.sqlite
+database/*.sqlite3
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+opt/
+tmp/
+
+# Cache
+cache/*.json
+cache/backups/
+
+# Private
+private/
+*.pem
+*.key
+*.crt
+
+# Archive (excluded from git per RULES.md)
+archive/
+
+# Working
+working/*
+!working/.gitkeep
+
+# Runtime storage artefacts (generated PDFs/HTML)
+storage/
+ui/dist/
+
+# Environment
+.env
+env
+config.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Temporary
+*.tmp
+*.bak
+*.backup
+
+# Runtime PID files
+.pids/
+*.pid
+.run/
+test/integration/docs/test_results/
+tests/integration/docs/test_results/
+env-*-secrets
+data/
+node_modules
+*.pyc
+*.tfstate
+
+working/
+working/w28a-*-screenshots/
+node_modules/
+tests/env-*-resolved*
+tests/env-*local-resolved*
+docker-env.local
+*.env.resolved
+**/.session_secret
+working/w28a-311-r2/env-local-proof
+working/w28a-825/secret-sweep.json
+working/w28d-441-r5/credential-discovery-redacted.json

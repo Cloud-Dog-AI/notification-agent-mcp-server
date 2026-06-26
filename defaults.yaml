@@ -1,0 +1,634 @@
+# Default Configuration for Notification Agent MCP Server
+# These values are used unless overridden by config.yaml or environment variables
+#
+# Priority Order (highest to lowest):
+# 1. OS Environment Variables (CLOUD_DOG__NOTIFY__*)
+# 2. env file (bash-source-able)
+# 3. config.yaml (custom configuration)
+# 4. default.yaml (this file - defaults)
+
+app:
+  id: 1
+  version: ""
+  title: "Notification Agent MCP Server"
+  description: ""
+  server_name: ""
+  server_id: "notification-agent"
+  default_language: "en"  # W28A-322: System-wide default language — MUST be "en" to prevent test-fixture "fr" leaking
+  certificate: ""
+  key: ""
+  env_write_enabled: false
+
+# Database Configuration
+db:
+  uri: "${CLOUD_DOG__NOTIFY__DB__URI}"  # REQUIRED - e.g., sqlite3:///app/database/notify.db
+  
+# Default Channel (REQUIRED)
+default_channel: ""  # REQUIRED - e.g., email, sms, whatsapp, chat_rest
+
+# Mail Provider Configuration
+email:
+  smtp:
+    default:
+      host: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__HOST}"
+      port: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__PORT}"
+      username: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__USERNAME}"
+      password: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__PASSWORD}"
+      from_address: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__FROM_ADDRESS}"
+      use_tls: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__USE_TLS}"
+      use_starttls: "${CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEFAULT__USE_STARTTLS}"
+  imap:
+    default:
+      host: "${CLOUD_DOG__NOTIFY__EMAIL__IMAP__DEFAULT__HOST}"
+      port: "${CLOUD_DOG__NOTIFY__EMAIL__IMAP__DEFAULT__PORT}"
+      username: "${CLOUD_DOG__NOTIFY__EMAIL__IMAP__DEFAULT__USERNAME}"
+      password: "${CLOUD_DOG__NOTIFY__EMAIL__IMAP__DEFAULT__PASSWORD}"
+      use_tls: "${CLOUD_DOG__NOTIFY__EMAIL__IMAP__DEFAULT__USE_TLS}"
+      use_starttls: "${CLOUD_DOG__NOTIFY__EMAIL__IMAP__DEFAULT__USE_STARTTLS}"
+      mailbox: "INBOX"
+      poll_timeout_seconds: 60
+      poll_interval_seconds: 5
+
+# API Server Configuration
+api_server:
+  enabled: true
+  host: ""
+  port: ""  # REQUIRED
+  base_path: "/api/v1"  # PS-92 canonical API base path; legacy aliases remain in code for compatibility.
+  base_url: ""  # REQUIRED
+  api_key: ""
+  cors_origins:
+    - "*"
+  request_timeout: 300
+  message_fetch_timeout: 60
+  max_request_size: 10485760  # 10MB
+  max_startup_retries: 3
+  http_client_timeout: 10
+  db_query_timeout: 5
+  db_query_timeout_short: 3
+  subprocess_timeout: 600
+
+# Web UI Server Configuration
+web_server:
+  enabled: true
+  host: ""
+  port: ""  # REQUIRED
+  base_path: ""  # PS-92 canonical Web base path; keep empty for SPA/static catch-all.
+  max_startup_retries: 3
+  username: ""
+  password: ""
+  base_url: ""  # REQUIRED
+  api_base_url: ""  # REQUIRED
+  session_max_age: ""
+  session_timeout: ""
+  cors_origins: []
+  
+  proxy_timeout_seconds: 480  # W28A-925: LLM formatting can take 90-270s (AGENT-LESSONS §2.16)
+
+  # UI Polling Intervals (milliseconds)
+  status_refresh_interval: 10000    # Status panel refresh
+  jobs_refresh_interval: 10000      # Jobs list refresh
+  connection_check_interval: 5000   # Connection check
+
+# Thread-a (PROGRAM-IDAM-RECOVERY-2) flat WebUI login accounts. Three flat roles:
+# admin (full), read-write (use it), read-only (view). The admin account reuses
+# web_server.username/web_server.password above; the read-write / read-only demo
+# accounts below are config/env-overridable (literal demo defaults live in code,
+# src/servers/web/web_server.py::_flat_login_accounts). Permissions for all three
+# come from the ONE shared cloud_dog_idam guard (src/servers/web/web_flat_roles.py).
+web_login:
+  read_write_username: "read-write"
+  # Demo-account passwords are NOT embedded here (QT2.6 secrets separation forbids
+  # plaintext secrets in defaults.yaml). They resolve from config/env
+  # (CLOUD_DOG__NOTIFY__WEB_LOGIN__READ_WRITE_PASSWORD / READ_ONLY_PASSWORD) and,
+  # when unset, fall back to the non-secret demo credential defined in
+  # src/servers/web/web_server.py::_flat_login_accounts so the demo stays seeded.
+  read_write_password: ""
+  read_only_username: "read-only"
+  read_only_password: ""
+
+# MCP Server Configuration
+mcp_server:
+  enabled: true
+  transport: ""  # REQUIRED: "streamable_http", "http_jsonrpc", "legacy_sse", or "stdio"
+  base_url: ""  # REQUIRED for tests/clients
+  base_path: "/mcp"  # PS-92 canonical MCP base path.
+  port: ""  # REQUIRED
+  host: ""
+  protocol_version: "2024-11-05"
+  max_startup_retries: 3
+  name: ""
+  version: ""
+  tls: false
+  api_base_url: ""  # REQUIRED
+  api_key: ""
+  request_timeout: 60
+  max_concurrent_requests: 5
+  client_api_key: ""
+  session_ttl_seconds: 3600
+  streamable_http_path: "/mcp"
+  jsonrpc_path: "/mcp/messages"
+  legacy_sse_path: "/sse"
+  legacy_sse_message_path: "/message"
+  async_jobs_enabled: false
+  async_jobs_status_path: "/mcp/jobs/{job_id}"
+  async_jobs_timeout_seconds: 900
+  async_jobs_poll_interval_seconds: 2
+  sync_budget_seconds: 50
+  sync_budget_progress_seconds: 120
+
+# PS-95 Resource Pool Configuration
+resource_pools:
+  llm-pool:
+    max_running: "${CLOUD_DOG__NOTIFY__RESOURCE_POOLS__LLM_POOL__MAX_RUNNING:2}"
+  delivery-pool:
+    max_running: "${CLOUD_DOG__NOTIFY__RESOURCE_POOLS__DELIVERY_POOL__MAX_RUNNING:10}"
+
+# A2A Server Configuration
+a2a_server:
+  enabled: true
+  port: ""  # REQUIRED
+  host: ""
+  base_path: "/a2a"  # PS-92 canonical A2A base path.
+  max_startup_retries: 3
+  base_url: ""  # REQUIRED
+  api_base_url: ""  # REQUIRED
+  websocket_url: ""  # REQUIRED
+  request_timeout: 60
+
+# API Client Defaults (internal/test clients)
+api:
+  timeout: 300
+  read_timeout: 300
+  connect_timeout: 30
+
+# Queue & Job Manager Configuration
+queue:
+  name: "notification"
+  backend: "sql"
+  sql_database_url: ""
+  redis_url: ""
+  redis_key_prefix: "cloud_dog_notify_jobs"
+  default_ttl_hours: 24
+  max_retries: 5
+  backoff_base_seconds: 2  # Exponential backoff base
+  backoff_max_seconds: 3600  # Max backoff (1 hour)
+  worker_poll_interval_seconds: 5
+  worker_batch_size: 10
+  sending_timeout_seconds: 600
+  claim_timeout_seconds: 120  # Stuck job detection: job running with no heartbeat beyond this
+  run_timeout_ms: 900000  # Per-job hard execution timeout (15 minutes)
+  dead_letter_queue: "notification_dead_letter"  # Queue name for exhausted-retry jobs
+  watchdog:
+    formatting_stuck_minutes_null_payload: 5
+    formatting_stuck_minutes_with_payload: 10
+    sending_stuck_minutes: 10
+
+delivery:
+  max_queued: 1000
+
+delivery_worker:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8024
+  base_url: "http://127.0.0.1:8024"
+  poll_interval: 1.0
+  batch_size: 10
+  max_concurrent_deliveries: 2
+
+# Rate Limiting
+rate_limit:
+  per_channel_per_minute: 600
+  per_channel_per_hour: 10000
+  per_channel_per_day: 100000
+  per_destination_per_minute: 60
+  per_destination_per_hour: 500
+
+# Circuit Breaker
+circuit:
+  soft_error_threshold: 5
+  hard_error_threshold: 10
+  cooldown_seconds: 300  # 5 minutes
+
+# LLM Configuration
+llm:
+  provider: ""  # REQUIRED
+  base_url: ""  # REQUIRED
+  model: ""  # REQUIRED
+  temperature: 0.5
+  ignore_tls: false
+  openai_api_key: ""
+  anthropic_api_key: ""
+  azure_openai_api_key: ""
+  azure_openai_endpoint: ""
+  azure_openai_api_version: ""
+  google_api_key: ""
+  aws_region: ""
+  # Context window settings (set to match the configured model)
+  num_ctx: 32768
+  num_predict: 16384
+  max_tokens: ""
+  token_estimate_chars_per_token: 4.0
+  chunk_max_rounds: 2
+  timeout: 300
+  query_timeout: 300
+  retry_attempts: 1
+  retry_delay: 5
+  auto_pull: true
+  model_load_timeout: 300
+  startup_timeout: 5
+  event_loop_init_timeout: 5
+  top_p: 1
+  top_k: 0
+  repeat_penalty: 1.1
+  seed: 1234
+  mirostat: 0
+  mirostat_tau: 5.0
+  mirostat_eta: 0.1
+  # Operation-specific timeouts (seconds) - can be overridden in env file
+  translation_timeout: 300
+  translation_chunk_chars: 2000
+  translation_chunk_parallelism: 2
+  formatting_timeout: 300
+  summarization_timeout: 300
+  default_system_prompt: |
+    You are a helpful assistant for notification delivery. 
+    Generate concise, safe, and context-appropriate messaging.
+    Adjust style and format according to the destination channel.
+  # Format instructions for LLM output (IMPROVED - instructions at beginning)
+  format_instructions:
+    markdown: |
+      ═══════════════════════════════════════════════════════════
+      ⚠️  CRITICAL REQUIREMENT - MUST FOLLOW EXACTLY  ⚠️
+      ═══════════════════════════════════════════════════════════
+      
+      FORMAT: You MUST format the output as Markdown
+      - Use markdown syntax: # headers, ## subheaders, - lists, **bold**, *italic*
+      - Use blank lines between paragraphs
+      - The system will automatically convert this Markdown to HTML if needed
+      - Do NOT output HTML directly - use Markdown only
+      
+      ═══════════════════════════════════════════════════════════
+    html: |
+      ═══════════════════════════════════════════════════════════
+      ⚠️  CRITICAL REQUIREMENT - MUST FOLLOW EXACTLY  ⚠️
+      ═══════════════════════════════════════════════════════════
+      
+      FORMAT: You MUST format the output as Markdown (which will be converted to HTML automatically)
+      - Use markdown syntax: headers (#, ##, ###), lists (-, *, numbered), bold (**text**), italic (*text*)
+      - Use blank lines between paragraphs
+      - Links: [text](url)
+      - Do NOT output HTML directly - use Markdown only
+      
+      ═══════════════════════════════════════════════════════════
+    plain: |
+      Format the output as plain text, preserving readability with markdown-like formatting (e.g., bullets, indentation).
+  # Language instruction template (IMPROVED - instructions at beginning)
+  language_instruction_template: |
+    ═══════════════════════════════════════════════════════════
+    ⚠️  CRITICAL REQUIREMENT - MUST FOLLOW EXACTLY  ⚠️
+    ═══════════════════════════════════════════════════════════
+    
+    LANGUAGE: You MUST write the ENTIRE response in {language} (NOT English)
+    - All text MUST be in {language}
+    - Subject line MUST be in {language}
+    - Body content MUST be in {language}
+    - Do NOT use any English words or phrases
+    - Translate EVERYTHING to {language}
+    
+    ═══════════════════════════════════════════════════════════
+  # Temperature for strict instruction following (lower = more deterministic)
+  temperature: 0.5
+  # Summarization prompt template
+  summarization_prompt_template: |
+    ═══════════════════════════════════════════════════════════
+    ⚠️  CRITICAL REQUIREMENT - MUST FOLLOW EXACTLY  ⚠️
+    ═══════════════════════════════════════════════════════════
+    
+    TASK: Create a concise summary of the content below
+    
+    CRITICAL REQUIREMENTS:
+    - Maximum length: {max_length} characters (approximately {target_words} words)
+    - The summary MUST be written in {target_lang_name} (NOT English)
+    - Preserve the most important information and key facts
+    - Maintain critical details, numbers, and actionable points
+    - Extract and condense key points - DO NOT just truncate the text
+    - Format appropriately for {channel_type} channel: {channel_format_hint}
+    - DO NOT exceed {max_length} characters under any circumstances
+    - DO NOT include reasoning, thinking, or meta-commentary
+    - Output ONLY the summary, nothing else
+    
+    ═══════════════════════════════════════════════════════════
+    
+    Content to summarize:
+    {content}
+    
+    Summary (in {target_lang_name}, maximum {max_length} characters / {target_words} words):
+  post_processing:
+    strip_english_boilerplate:
+      - "Full message content is attached"
+      - "View full message"
+      - "Click here to view"
+      - "See attached"
+      - "Read more at"
+      - "For more information"
+      - "Please note that"
+  # Optional per-model prompt overrides.
+  # Model key uses a slug (e.g. "granite4:tiny-h" -> "granite4_tiny_h").
+  model_prompts:
+    granite4_tiny_h:
+      summarization_prompt_template: |
+        You are a summarization engine. Output ONLY the summary text.
+        HARD LIMIT: Your output MUST be under {max_length} characters. Count carefully.
+        Language: {target_lang_name}
+        Channel: {channel_type} ({channel_format_hint})
+        
+        Content:
+        {content}
+        
+        Summary:
+      language_instruction_template: |
+        ABSOLUTE RULE: Every single word of your response MUST be in {language}.
+        Zero English words allowed. Not even common terms like "email", "click", "view".
+        Translate ALL helper text, link labels, and boilerplate to {language}.
+        If unsure of a translation, omit the sentence entirely rather than leaving it in English.
+
+# Channels Configuration (placeholders - configure via env or config.yaml)
+channels:
+  smtp:
+    default:
+      enabled: false
+      host: ""
+      port: ""
+      username: ""
+      password: ""
+      from_address: ""
+      use_tls: null
+    # DEMO-027 dedicated SMTP channel — same server as email_default.
+    # Credentials come from env: CLOUD_DOG__NOTIFY__CHANNELS__SMTP__DEMO27_TRANSPARENT_BORDERS__*
+    demo27_transparent_borders:
+      enabled: false
+      host: ""
+      port: ""
+      username: ""
+      password: ""
+      from_address: ""
+      use_tls: null
+  
+  sms:
+    default:
+      enabled: false
+      provider: "twilio"
+      api_key: ""
+      sender: ""
+      account_sid: ""
+      base_url: ""
+  
+  whatsapp:
+    default:
+      enabled: false
+      base_url: ""
+      token: ""
+      account_sid: ""
+      from_number: ""
+  
+  chat_rest:
+    default:
+      enabled: false
+      endpoint: ""
+      api_token: ""
+      channel_id: ""
+    # transparentbordes profile: Slack channel for Ukraine digest deliveries.
+    # Endpoint comes from env: CLOUD_DOG__NOTIFY__CHANNELS__CHAT_REST__TRANSPARENTBORDES__ENDPOINT
+    transparentbordes:
+      enabled: false
+      endpoint: ""
+      is_channel_based: true
+      auth_type: "none"
+      format: "slack"
+      limits:
+        rate_per_minute: 100
+        rate_per_hour: 1000
+        max_length: 1000
+      restrictions:
+        max_length: 1000
+        allowed_formats:
+          - "text"
+        link_strategy: "summary+link"
+
+# Confirmations & Callbacks
+confirmations:
+  signature:
+    secret: ""
+    algorithm: "sha256"
+  polling:
+    enabled: true
+    interval_seconds: 60
+
+# Logging Configuration
+log:
+  level: "INFO"
+  format: "json"  # standard, json, detailed
+  console: true
+  service_instance: "${HOSTNAME:notification-agent-local}"
+  environment: "${CLOUD_DOG_ENVIRONMENT:dev}"
+  audit_log: "./logs/audit.log.jsonl"
+  dump_config: false
+
+  # Server-specific log files
+  api_server_log: "./logs/api_server.log"
+  web_server_log: "./logs/web_server.log"
+  web_access_log: "./logs/web_access.log"
+  mcp_server_log: "./logs/mcp_server.log"
+  a2a_server_log: "./logs/a2a_server.log"
+  delivery_worker_log: "./logs/delivery_worker.log"
+  
+  # HTTP access logs
+  enable_access_log: true
+  
+  # Log rotation
+  max_bytes: 10485760  # 10MB
+  backup_count: 10
+  compress: true
+  rotation_type: "size"  # size or time
+  retention_days: 30
+  retention:
+    hot_days: 14
+    cold_days: 60
+    archive_format: "gz"
+  integrity:
+    enabled: true
+    interval_seconds: 300
+    log_file: "./logs/audit-integrity.log"
+    hash_algorithm: "sha256"
+  rotation:
+    mode: "size"
+    max_bytes: 10485760
+    backup_count: 10
+    when: "midnight"
+    interval: 1
+    compress: true
+
+# Security & Auth
+auth:
+  provider: ""  # REQUIRED
+  jwt_secret: ""
+  jwt_algorithm: ""
+  jwt_expiry_minutes: ""
+
+# Data Retention & Privacy
+retention:
+  messages_days: 30
+  deliveries_days: 30
+  receipts_days: 30
+  logs_days: 30
+  audit_events_days: 90
+
+# Observability
+observability:
+  metrics_enabled: true
+  tracing_enabled: false
+  health_check_interval_seconds: 30
+
+# Messages Configuration
+messages:
+  # Base URL for message center links
+  base_url: ""  # REQUIRED
+  
+  # Header/Intro message templates (will be translated to target language)
+  header_templates:
+    # Template with placeholders: {message_id}, {job_id}, {message_guid}
+    default: "Message #{message_id} | Job #{job_id}"
+    with_guid: "Message #{message_id} ({message_guid}) | Job #{job_id}"
+    simple: "Notification #{message_id}"
+  
+  # Link label templates (will be translated to target language)
+  link_labels:
+    view_full_message: "View full message"
+    view_source_message: "View source message"
+    view_pdf: "PDF version"
+    view_message_center: "View in message center"
+    characters: "characters"
+    znaków: "znaków"  # Polish
+    Zeichen: "Zeichen"  # German
+    字符: "字符"  # Chinese
+    أحرف: "أحرف"  # Arabic
+
+# Notification Storage Configuration
+storage:
+  # Storage backend type: "local", "filesystem", "s3", "webdav", "ftp"
+  # "local" and "filesystem" are aliases for the same FilesystemBackend
+  # delegating to cloud_dog_storage.LocalStorage (RULES.md §1.7).
+  backend: ""
+
+  # Local storage configuration (alias of filesystem)
+  local:
+    base_path: ""  # REQUIRED
+    base_url: ""  # REQUIRED
+
+  # Filesystem storage configuration — same backend as `local`, registered
+  # under the explicit `filesystem` storage_type for the
+  # /storage/files/{backend_type}/{filename} API surface (FR1.20).
+  # All file I/O goes through cloud_dog_storage.LocalStorage — never bespoke.
+  # See W28A-I09 (filesystem backend wiring) for the resolution history.
+  filesystem:
+    base_path: "/app/storage/filesystem"
+    create_subdirs: false
+    subdir_pattern: "{year}/{month}/{day}"
+    permissions: 0o644
+    dir_permissions: 0o755
+
+  # S3 storage configuration (future)
+  s3:
+    endpoint: ""
+    bucket: "notification"
+    access_key: ""
+    secret_key: ""
+    region: ""
+
+  # WebDAV storage configuration (future)
+  webdav:
+    url: ""
+    username: ""
+    password: ""
+
+  # FTP storage configuration (future)
+  ftp:
+    host: ""
+    port: ""
+    username: ""
+    password: ""
+    passive_mode: ""
+
+# Test Configuration (defaults - override via env files)
+test:
+  email_domain: "@example.com"
+  default_sms_channel: "sms_default"
+  media:
+    image_url: "https://example.com/test-image.png"
+    http_image_url: "http://example.com/test.png"
+    https_image_url: "https://example.com/test.png"
+  webhook:
+    slack_url: "https://example.com/slack-webhook"
+    local_url: "http://localhost:9999/webhook"
+    example_url: "https://example.com/webhook"
+    invalid_url: "not-a-url"
+    invalid_scheme_url: "ftp://example.com"
+    bearer_token: ""
+  performance:
+    channel: "loopback_test"
+    iterations: 10
+    p95_threshold_ms: 500
+    inter_request_delay_ms: 500
+    skip_sqlite: true
+  at15:
+    max_wait: 600
+    poll_interval: 2.0
+    subject_template: "AT1.5 Test: {source}->{target} ({size} chars, {format})"
+    scenarios:
+      - source: "en"
+        target: "fr"
+        size: 400
+        format: "html"
+        id: "default_en_fr_400_html"
+    negative:
+      max_wait: 60
+      scenarios:
+        - id: "missing_destination"
+          description: "Missing destination should fail at API validation"
+          remove_destination: true
+          expected_fails_at: "creation"
+          expected_status: 400
+    smtp_variants:
+      - id: "port_25_plain"
+        description: "Port 25 - Plain SMTP"
+        port: 25
+        use_tls: false
+        use_starttls: false
+    personalised:
+      scenarios:
+        - language: "en"
+          content_style: "html"
+          description: "English HTML (W28A-322: was 'fr' — test fixture leaked into production)"
+  at14d:
+    summary_size: 400
+    summary_tolerance: 0.4
+    max_wait: 600
+    pdf_min_size_ratio: 0.5
+    format: "pdf"
+    generate_pdf: true
+  at14g:
+    summary_size: 400
+    summary_tolerance: 0.4
+    full_size_tolerance: 0.3
+    max_wait: 600
+    pdf_min_size_ratio: 0.5
+    format: "pdf"
+    generate_pdf: true
+
+# Platform cache (cloud_dog_cache)
+cache:
+  enabled: true
+  backend: "memory"
+  ttl_seconds: 3600
+  max_entries: 1000
