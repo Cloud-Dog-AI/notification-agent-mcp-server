@@ -168,7 +168,7 @@ def test_admin_and_flat_roles_see_all():
 def test_secret_masking_non_admin_vs_admin():
     """T2-SECRET-MASK: channel config secret masked for non-admin, cleartext for admin."""
     guard, _ = _build()
-    payload = {"endpoint": "https://example", "auth": {"password": "s3cr3t-P", "user": "ops"}}
+    payload = {"endpoint": "https://example", "auth": {"password": "<password>", "user": "ops"}}
 
     masked = mask_secrets(payload, is_admin=guard.is_admin(U_ID))
     assert masked["auth"]["password"] == "***REDACTED***"

@@ -121,11 +121,11 @@ class TestRuntimeConfig:
         
         # Create test data with secrets
         test_data = {
-            "api_key": "secret123",
-            "password": "mypassword",
+            "api_key": "<api-key>",
+            "password": "<password>",
             "normal_field": "visible",
             "nested": {
-                "token": "secrettoken",
+                "token": "<token>",
                 "public": "public_value"
             }
         }

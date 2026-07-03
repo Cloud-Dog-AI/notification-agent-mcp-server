@@ -222,7 +222,7 @@ class TestRealWebUIIntegration:
             "username": unique_username,
             "email": f"{unique_username}@cloud-dog.net",
             "display_name": "Real Test User",
-            "password": "TestPassword123!"  # Required field
+            "password": "<password>"  # Required field
         }
         
         response = await authenticated_web_client.post(
@@ -814,7 +814,7 @@ class TestRealWebUIIntegration:
             email = test_email.replace("@", f"+it16group{int(time.time())}@") if "@" in test_email else test_email
             user_resp = await authenticated_web_client.post(
                 "/webapi/proxy/users",
-                json={"username": username, "email": email, "password": "Pw12345!", "role": "user"},
+                json={"username": username, "email": email, "password": "<password>", "role": "user"},
                 follow_redirects=True,
                 timeout=timeout,
             )

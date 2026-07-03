@@ -205,7 +205,7 @@ def test_read_write_writes_are_not_pre_gated(web_client, accounts) -> None:
 def test_bad_credentials_rejected(web_client, accounts) -> None:
     admin_user = accounts["admin"][0]
     assert web_client.post(
-        "/auth/login", json={"username": admin_user, "password": "wrong"}
+        "/auth/login", json={"username": admin_user, "password": "<password>"}
     ).status_code == 401
     assert web_client.post(
         "/auth/login", json={"username": "ghost-user", "password": "x"}

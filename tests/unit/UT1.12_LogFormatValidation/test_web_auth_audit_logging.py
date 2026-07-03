@@ -88,7 +88,7 @@ async def test_html_login_emits_structured_success_and_failure(_web_auth_logging
     assert success["auth_method"] == "password_form"
 
     failure_request = _DummyRequest(path="/login")
-    failure_response = await web_server.login(username="admin", password="wrong", request=failure_request)
+    failure_response = await web_server.login(username="admin", password="<password>", request=failure_request)
     assert failure_response.status_code == 200
 
     failure = fake_audit.login_calls[-1]
@@ -105,7 +105,7 @@ async def test_json_login_failure_emits_structured_login_event(_web_auth_logging
     web_server, fake_audit = _web_auth_logging_state
     request = _DummyRequest(
         path="/auth/login",
-        json_payload={"username": "admin", "password": "wrong"},
+        json_payload={"username": "admin", "password": "<password>"},
     )
 
     with pytest.raises(HTTPException) as exc:

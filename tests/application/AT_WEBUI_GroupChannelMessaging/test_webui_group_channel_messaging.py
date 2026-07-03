@@ -55,7 +55,7 @@ def test_webui_t3_t5_group_crud_and_role_binding(test_config, test_email_domain)
                     "username": member_username,
                     "email": member_email,
                     "display_name": "E2E Member",
-                    "password": "Pw12345!",
+                    "password": "<password>",
                     "role": "viewer",
                 },
             )
@@ -176,7 +176,7 @@ def test_webui_t6_t7_t10_t11_channel_send_group_delivery_tracking(test_config, t
         "host": "mail.example.com",
         "port": 25,
         "username": "operations@cloud-dog.net",
-        "password": "StGeorge20@8",
+        "password": "<password>",
         "from_address": "operations@cloud-dog.net",
         "use_tls": False,
         "use_starttls": False,
@@ -260,7 +260,7 @@ def test_webui_t6_t7_t10_t11_channel_send_group_delivery_tracking(test_config, t
                         "username": member_username,
                         "email": member_email,
                         "display_name": "E2E Delivery Member",
-                        "password": "Pw12345!",
+                        "password": "<password>",
                         "role": "viewer",
                     },
                 )

@@ -209,7 +209,7 @@ class TestWebUIIntegration:
         """V10.2: Test login failure with wrong credentials"""
         response = await web_client.post(
             "/login",
-            data={"username": "wrong", "password": "wrong"}
+            data={"username": "wrong", "password": "<password>"}
         )
         assert response.status_code == 200
         assert "Login Failed" in response.text or "Invalid" in response.text
