@@ -6,7 +6,7 @@ registry: service
 required: conditional
 when-applicable: ""
 template-last-updated: 2026-06-12
-template-owner: platform-standards
+template-owner: public-standards
 
 project: notification-agent-mcp-server
 doc-last-updated: 2026-06-12
@@ -53,7 +53,7 @@ List of static UI routes registered in `_SPA_ENTRY_ROUTES` (see AGENT-LESSONS fo
 
 ## Recovered domain content — `archive/2026-06-12/WEB_UI.md` (162 lines)
 
-_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `cloud-dog-ai-platform-standards/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/WEB_UI.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
+_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `public release checklist/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/WEB_UI.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
 
 # Web UI Documentation
 **Version:** 1.0 • 2025-11-26

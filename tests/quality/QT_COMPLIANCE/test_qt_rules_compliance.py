@@ -64,7 +64,7 @@ def test_at_suite_directories_exist(project_root: Path) -> None:
 
 def test_rules_reference_vault_and_server_control(project_root: Path) -> None:
     text = _read(project_root / "RULES.md")
-    assert "env-vault" in text
+    assert "env-public" in text
     assert "server_control.sh" in text
 
 # W28A-202 marker augmentation

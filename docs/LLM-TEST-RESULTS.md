@@ -6,7 +6,7 @@ registry: service
 required: must-have
 when-applicable: ""
 template-last-updated: 2026-06-12
-template-owner: platform-standards
+template-owner: public-standards
 
 project: notification-agent-mcp-server
 doc-last-updated: 2026-06-18
@@ -28,7 +28,7 @@ doc-conformance-stamp: 2026-06-18T00:00:00Z
 - Service: `notification-agent-mcp-server`
 - Base env: `tests/env-AT-local-server`
 - Model overlays: `working/w28a-925/envs/*.env`
-- Secret resolution: `env-vault` sourced in-process
+- Secret resolution: `env-public` sourced in-process
 - AT subset: AT1.1 + AT1.4a + AT1.16 + AT1.17 + AT1.18 (12 tests, ~8-10 min per model)
 
 ## Bug Fixes Applied (Prerequisites)
@@ -77,7 +77,7 @@ Most models use the default overlay settings. Two required tuning:
 
 ## Evidence Paths
 
-- Platform report: `cloud-dog-ai-platform-standards/working/W28A-925-NOTIFICATION-AGENT-LLM-TESTS-REPORT.md`
+- Platform report: `public release checklist/working/W28A-925-NOTIFICATION-AGENT-LLM-TESTS-REPORT.md`
 - Ollama matrix log: `working/w28a-925-ollama-matrix.log`
 - OpenRouter matrix log: `working/w28a-925-openrouter-matrix.log`
 - Per-model AT subset logs: `working/w28a-925-{model}-subset.log`

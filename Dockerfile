@@ -61,12 +61,12 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Install platform packages from public Gitea PyPI.
-ARG PYPI_URL=https://gitea.cloud-dog.net/api/packages/Cloud-Dog-External/pypi/simple
+# Install platform packages from public public Git PyPI.
+ARG PYPI_URL=https://git.example.invalid/api/packages/Cloud-Dog-External/pypi/simple
 RUN --mount=type=secret,id=pip_conf,target=/etc/pip.conf \
     pip install --no-cache-dir \
       --extra-index-url ${PYPI_URL} \
-      --trusted-host gitea.cloud-dog.net \
+      --trusted-host git.example.invalid \
       --trusted-host files.pythonhosted.org \
       cloud-dog-config \
       cloud-dog-logging \
@@ -80,7 +80,7 @@ RUN --mount=type=secret,id=pip_conf,target=/etc/pip.conf \
 COPY requirements.txt .
 RUN --mount=type=secret,id=pip_conf,target=/etc/pip.conf \
     pip install --no-cache-dir \
-      --trusted-host gitea.cloud-dog.net \
+      --trusted-host git.example.invalid \
       --trusted-host files.pythonhosted.org \
       -r requirements.txt
 

@@ -67,7 +67,7 @@ CERT_FILE="${CERT_DIR}/ca.crt"
 PIP_CONF=".pip.conf.build"
 
 # ── Publication tag isolation (W28A-831) ──────────────────────────
-# PUBLICATION_TAG_SUFFIX appends an isolation suffix (e.g. gitea-test,
+# PUBLICATION_TAG_SUFFIX appends an isolation suffix (e.g. public-test,
 # github-test) so publication test images never collide with dev/
 # release tags. Empty (the default) leaves behaviour unchanged.
 PUBLICATION_TAG_SUFFIX="${PUBLICATION_TAG_SUFFIX:-}"

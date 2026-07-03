@@ -6,7 +6,7 @@
 # PIP_INDEX_URL build ARG (default: public PyPI). It NEVER hardcodes an internal
 # Cloud-Dog host and NEVER uses --extra-index-url (PS-97 v1.1 §3.3 / §4 forbid both).
 #
-# Development / Gitea-boundary builds use the separate `Dockerfile` (internal
+# Development / public Git-boundary builds use the separate `Dockerfile` (internal
 # variant). Select the public path via: docker-build.sh --variant public
 #
 # NOTE: platform packages (cloud-dog-config, cloud-dog-logging, cloud-dog-api-kit,

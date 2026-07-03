@@ -93,7 +93,7 @@ qwen3:14b
 Once Ollama is running:
 
 ```bash
-cd /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server
+cd /path/to/cloud-dog-ai/notification-agent-mcp-server
 pytest tests/application/AT1.6_PromptManagement/test_at1_6e_priority_selection.py \
   --env private/env-test-at16 -v
 ```

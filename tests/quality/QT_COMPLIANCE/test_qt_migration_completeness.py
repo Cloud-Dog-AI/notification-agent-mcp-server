@@ -55,7 +55,7 @@ def test_no_absolute_venv_paths_in_src(src_dir: Path, project_root: Path) -> Non
     hits: list[str] = []
     for path in src_dir.rglob("*.py"):
         for idx, line in enumerate(_read(path).splitlines(), 1):
-            if "/opt/iac/Development/" in line and "notification-agent-mcp-server" in line:
+            if "/path/to/workspace/Development/" in line and "notification-agent-mcp-server" in line:
                 hits.append(f"{path.relative_to(project_root)}:{idx}")
     assert not hits, "Absolute workspace paths found in src:\n" + "\n".join(hits)
 

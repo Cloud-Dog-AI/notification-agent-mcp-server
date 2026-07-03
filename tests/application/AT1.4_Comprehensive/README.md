@@ -28,7 +28,7 @@
 
 ```bash
 # Run all AT1.4 comprehensive tests
-cd /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server
+cd /path/to/cloud-dog-ai/notification-agent-mcp-server
 python3 -m pytest tests/application/AT1.4_Comprehensive/ -v -s
 
 # Run specific test

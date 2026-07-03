@@ -16,17 +16,17 @@ class TestBuildPublicMessageUrl:
     @pytest.mark.mcp
     @pytest.mark.req("CS-013")
     def test_preprod_url_with_guid(self):
-        cfg = FakeConfig({"messages.base_url": "https://notificationagent0.cloud-dog.net/messages"})
+        cfg = FakeConfig({"messages.base_url": "https://notification-agent.example.com/messages"})
         url = build_public_message_url(cfg, message_guid="abc-123")
-        assert url == "https://notificationagent0.cloud-dog.net/messages/abc-123"
+        assert url == "https://notification-agent.example.com/messages/abc-123"
     @pytest.mark.UT
     @pytest.mark.mcp
     @pytest.mark.req("CS-014")
 
     def test_preprod_url_with_language(self):
-        cfg = FakeConfig({"messages.base_url": "https://notificationagent0.cloud-dog.net/messages"})
+        cfg = FakeConfig({"messages.base_url": "https://notification-agent.example.com/messages"})
         url = build_public_message_url(cfg, message_guid="abc-123", language="fr")
-        assert url == "https://notificationagent0.cloud-dog.net/messages/abc-123?language=fr"
+        assert url == "https://notification-agent.example.com/messages/abc-123?language=fr"
     @pytest.mark.UT
     @pytest.mark.mcp
     @pytest.mark.req("FR-022")
@@ -41,7 +41,7 @@ class TestBuildPublicMessageUrl:
 
     def test_messages_url_takes_precedence(self):
         cfg = FakeConfig({
-            "messages.base_url": "https://notificationagent0.cloud-dog.net/messages",
+            "messages.base_url": "https://notification-agent.example.com/messages",
             "api_server.base_url": "http://localhost:8083",
         })
         url = build_public_message_url(cfg, message_guid="abc-123")
@@ -78,15 +78,15 @@ class TestBuildPublicMessageUrl:
 
 
     def test_message_id_fallback(self):
-        cfg = FakeConfig({"messages.base_url": "https://notificationagent0.cloud-dog.net/messages"})
+        cfg = FakeConfig({"messages.base_url": "https://notification-agent.example.com/messages"})
         url = build_public_message_url(cfg, message_id="42")
-        assert url == "https://notificationagent0.cloud-dog.net/messages/42"
+        assert url == "https://notification-agent.example.com/messages/42"
     @pytest.mark.UT
     @pytest.mark.mcp
     @pytest.mark.req("FR-022")
 
     def test_guid_takes_precedence_over_id(self):
-        cfg = FakeConfig({"messages.base_url": "https://notificationagent0.cloud-dog.net/messages"})
+        cfg = FakeConfig({"messages.base_url": "https://notification-agent.example.com/messages"})
         url = build_public_message_url(cfg, message_guid="guid-1", message_id="42")
         assert "guid-1" in url
         assert "42" not in url
@@ -95,9 +95,9 @@ class TestBuildPublicMessageUrl:
     @pytest.mark.req("FR-022")
 
     def test_base_url_without_messages_suffix(self):
-        cfg = FakeConfig({"messages.base_url": "https://notificationagent0.cloud-dog.net"})
+        cfg = FakeConfig({"messages.base_url": "https://notification-agent.example.com"})
         url = build_public_message_url(cfg, message_guid="abc")
-        assert url == "https://notificationagent0.cloud-dog.net/messages/abc"
+        assert url == "https://notification-agent.example.com/messages/abc"
     @pytest.mark.UT
     @pytest.mark.mcp
     @pytest.mark.req("FR-022")
@@ -105,12 +105,12 @@ class TestBuildPublicMessageUrl:
     def test_no_localhost_in_preprod_url(self):
         """When messages.base_url is set to a real host, no localhost leak."""
         cfg = FakeConfig({
-            "messages.base_url": "https://notificationagent0.cloud-dog.net/messages",
+            "messages.base_url": "https://notification-agent.example.com/messages",
             "api_server.base_url": "http://localhost:8083",
         })
         url = build_public_message_url(cfg, message_guid="test-guid", language="en")
         assert "localhost" not in url
-        assert "notificationagent0.cloud-dog.net" in url
+        assert "notification-agent.example.com" in url
         assert "?language=en" in url
     @pytest.mark.UT
     @pytest.mark.mcp

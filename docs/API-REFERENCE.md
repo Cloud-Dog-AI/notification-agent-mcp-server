@@ -6,7 +6,7 @@ registry: service
 required: must-have
 when-applicable: ""
 template-last-updated: 2026-06-12
-template-owner: platform-standards
+template-owner: public-standards
 
 project: notification-agent-mcp-server
 doc-last-updated: 2026-06-18
@@ -224,7 +224,7 @@ Representative response:
 
 ## Recovered domain content — `archive/2026-06-12/API_DOCUMENTATION.md` (258 lines)
 
-_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `cloud-dog-ai-platform-standards/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/API_DOCUMENTATION.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
+_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `public release checklist/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/API_DOCUMENTATION.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
 
 # API Documentation
 
@@ -490,7 +490,7 @@ curl -H "<bearer-token-header>: Bearer your-api-key" http://localhost:8083/healt
 
 ## Recovered domain content — `archive/2026-06-12/API_SERVER.md` (134 lines)
 
-_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `cloud-dog-ai-platform-standards/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/API_SERVER.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
+_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `public release checklist/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/API_SERVER.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
 
 # API Server Documentation
 **Version:** 1.0 • 2025-11-26

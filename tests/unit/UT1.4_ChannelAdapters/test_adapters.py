@@ -322,7 +322,7 @@ class TestChatAdapterSlackPayload:
                     "*Ukraine digest: 7-day situation update*\n\n"
                     "Recent updates include expanded drone and infrastructure reporting "
                     "with military, political, and strategic context.\n\n"
-                    "<https://notificationagent0.cloud-dog.net/messages/example|View full message>"
+                    "<https://notification-agent.example.com/messages/example|View full message>"
                 ),
             }
         )

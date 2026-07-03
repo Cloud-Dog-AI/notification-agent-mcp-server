@@ -43,7 +43,7 @@ This document follows the structure defined in RULES.md:
 ### SV1.1: System Overview
 A multi-channel notification platform composed of four servers (API/REST, MCP, A2A, Web UI/Admin). It accepts requests to notify users across email (SMTP), SMS, WhatsApp, and generic chat (via REST). It formats content with an LLM, tracks confirmations (callbacks/receipts/polling), enforces quotas and TTL-based queuing, and offers rich admin/observability.
 
-**Alignment**: [ARCH:OV1.1](ARCHITECTURE.md#ov11), [TASK:T1](TASKS.md#t1)
+**Alignment**: [ARCH:OV1.1](ARCHITECTURE.md#ov11), TASK:T1
 
 ### SV1.2: In-Scope (v1)
 - Channels: email (SMTP), SMS, WhatsApp, Chat via REST webhook/HTTP
@@ -60,7 +60,7 @@ A multi-channel notification platform composed of four servers (API/REST, MCP, A
 - API key auth for API/MCP/A2A; session auth for Web UI
 - Web UI: queue/jobs, messages/deliveries, channels, users, groups, status, logs/config
 
-**Alignment**: [ARCH:SA1.1](ARCHITECTURE.md#sa11), [TASK:T2](TASKS.md#t2)
+**Alignment**: [ARCH:SA1.1](ARCHITECTURE.md#sa11), TASK:T2
 
 ### SV1.3: Out-of-Scope (v1)
 - Advanced journey orchestration; complex segmentation
@@ -76,32 +76,32 @@ A multi-channel notification platform composed of four servers (API/REST, MCP, A
 ### BO1.1: Reliable Delivery
 Provide reliable, auditable delivery across multiple channels.
 
-**Alignment**: [ARCH:RR1.1](ARCHITECTURE.md#rr11), [TASK:T12](TASKS.md#t12), [TEST:AT1.1](TESTS.md#at11)
+**Alignment**: [ARCH:RR1.1](ARCHITECTURE.md#rr11), TASK:T12, [TEST:AT1.1](TESTS.md#at11)
 
 ### BO1.2: Broadcast and Personalised Sends
 Support both broadcast and personalised notification sends.
 
-**Alignment**: [ARCH:CC2.1.1](ARCHITECTURE.md#cc211), [TASK:T5](TASKS.md#t5), [TEST:AT1.2](TESTS.md#at12)
+**Alignment**: [ARCH:CC2.1.1](ARCHITECTURE.md#cc211), TASK:T5, [TEST:AT1.2](TESTS.md#at12)
 
 ### BO1.3: LLM-Assisted Formatting
 Provide LLM-assisted formatting per domain/channel/user.
 
-**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T8](TASKS.md#t8), [TEST:UT1.5](TESTS.md#ut15)
+**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T8, [TEST:UT1.5](TESTS.md#ut15)
 
 ### BO1.4: Operational Controls
 Provide clear operational controls (rate limits, circuit breakers, TTL, retries).
 
-**Alignment**: [ARCH:CP1.1](ARCHITECTURE.md#cp11), [TASK:T12](TASKS.md#t12), [TEST:ST1.2](TESTS.md#st12)
+**Alignment**: [ARCH:CP1.1](ARCHITECTURE.md#cp11), TASK:T12, [TEST:ST1.2](TESTS.md#st12)
 
 ### BO1.5: Admin Experience
 Deliver first-class admin experience in Web UI.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TEST:AT1.3](TESTS.md#at13)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, [TEST:AT1.3](TESTS.md#at13)
 
 ### BO1.6: Code Reuse
 Strong reuse of the existing SQL Agent MCP project patterns.
 
-**Alignment**: [ARCH:DO1.1](ARCHITECTURE.md#do11), [TASK:T8](TASKS.md#t8)
+**Alignment**: [ARCH:DO1.1](ARCHITECTURE.md#do11), TASK:T8
 
 ---
 
@@ -110,17 +110,17 @@ Strong reuse of the existing SQL Agent MCP project patterns.
 ### BR1.1: Multi-Channel Support
 System shall support multiple notification channels (email, SMS, WhatsApp, Chat REST).
 
-**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [TASK:T6](TASKS.md#t6), [TEST:IT1.2](TESTS.md#it12)
+**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), TASK:T6, [TEST:IT1.2](TESTS.md#it12)
 
 ### BR1.2: User Management
 System shall provide comprehensive user management including local users, LDAP/Keycloak integration, groups, and preferences.
 
-**Alignment**: [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), [TASK:T16](TASKS.md#t16), [TASK:T17](TASKS.md#t17), [TEST:AT1.9](TESTS.md#at19)
+**Alignment**: [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), TASK:T16, TASK:T17, [TEST:AT1.9](TESTS.md#at19)
 
 ### BR1.3: Personalization
 System shall support personalization including language preferences, channel preferences, keyword-based customization, and LLM prompt selection.
 
-**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T8](TASKS.md#t8), [TASK:T20](TASKS.md#t20), [TEST:AT1.5](TESTS.md#at15)
+**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T8, TASK:T20, [TEST:AT1.5](TESTS.md#at15)
 
 ---
 
@@ -129,62 +129,62 @@ System shall support personalization including language preferences, channel pre
 ### FR1.1: Submission & Modes
 System shall accept broadcast and personalised sends. Support idempotency keys, per-message TTL (default 24h). Optionally restrict to subset of channels; default channel required.
 
-**Alignment**: [ARCH:AI1.1](ARCHITECTURE.md#ai11), [TASK:T9](TASKS.md#t9), [TEST:IT1.1](TESTS.md#it11), [TEST:IT1.3](TESTS.md#it13)
+**Alignment**: [ARCH:AI1.1](ARCHITECTURE.md#ai11), TASK:T9, [TEST:IT1.1](TESTS.md#it11), [TEST:IT1.3](TESTS.md#it13)
 
 ### FR1.2: Content & Templates
 System shall accept raw content and/or template + variables. LLM formats content according to channel and user preferences (language, rich vs summary+link, timezone). For risky/limited channels, send summary + secure link (unguessable GUID) to full content.
 
-**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T8](TASKS.md#t8), [TASK:T20](TASKS.md#t20), [TEST:UT1.5](TESTS.md#ut15), [TEST:AT1.5](TESTS.md#at15)
+**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T8, TASK:T20, [TEST:UT1.5](TESTS.md#ut15), [TEST:AT1.5](TESTS.md#at15)
 
 ### FR1.3: LLM Prompt Management
 System shall provide LLM Prompt Management: Default prompts per channel type, with overrides for groups, languages, and keywords. Prompt Selection Logic: System selects prompt based on priority: explicit directive → user keyword → user language → group keyword → group language → channel default.
 
-**Alignment**: [ARCH:CC4.1.2](ARCHITECTURE.md#cc412), [TASK:T18](TASKS.md#t18), [TEST:AT1.6](TESTS.md#at16), [TEST:AT1.10](TESTS.md#at110)
+**Alignment**: [ARCH:CC4.1.2](ARCHITECTURE.md#cc412), TASK:T18, [TEST:AT1.6](TESTS.md#at16), [TEST:AT1.10](TESTS.md#at110)
 
 ### FR1.4: Translation
 System shall provide automatic translation based on user language preference.
 
-**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T15](TASKS.md#t15), [TEST:AT1.7](TESTS.md#at17)
+**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T15, [TEST:AT1.7](TESTS.md#at17)
 
 ### FR1.5: Channel Restrictions
 System shall enforce channel-specific constraints (no images, max 140 chars, HTML format, etc.).
 
-**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T6](TASKS.md#t6), [TASK:T20](TASKS.md#t20), [TEST:UT1.5](TESTS.md#ut15)
+**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T6, TASK:T20, [TEST:UT1.5](TESTS.md#ut15)
 
 ### FR1.6: SMTP Channel Adapter
 System shall support SMTP channel with from/reply-to, attachments, bounce handling.
 
-**Alignment**: [ARCH:CC5.1.1](ARCHITECTURE.md#cc511), [TASK:T17](TASKS.md#t17), [TEST:AT1.17](TESTS.md#at117)
+**Alignment**: [ARCH:CC5.1.1](ARCHITECTURE.md#cc511), TASK:T17, [TEST:AT1.17](TESTS.md#at117)
 
 ### FR1.7: SMS Channel Adapter
 System shall support SMS via provider REST, unicode/length split, receipts.
 
-**Alignment**: [ARCH:CC5.1.2](ARCHITECTURE.md#cc512), [TASK:T18](TASKS.md#t18), [TEST:IT1.6](TESTS.md#it16)
+**Alignment**: [ARCH:CC5.1.2](ARCHITECTURE.md#cc512), TASK:T18, [TEST:IT1.6](TESTS.md#it16)
 
 ### FR1.8: WhatsApp Channel Adapter
 System shall support WhatsApp with template IDs, media, fallbacks.
 
-**Alignment**: [ARCH:CC5.1.3](ARCHITECTURE.md#cc513), [TASK:T19](TASKS.md#t19), [TEST:IT1.7](TESTS.md#it17)
+**Alignment**: [ARCH:CC5.1.3](ARCHITECTURE.md#cc513), TASK:T19, [TEST:IT1.7](TESTS.md#it17)
 
 ### FR1.9: Chat REST Channel Adapter
 System shall support Chat REST: Slack/Teams/Discord-like incoming webhooks or REST APIs.
 
-**Alignment**: [ARCH:CC5.1.4](ARCHITECTURE.md#cc514), [TASK:T20](TASKS.md#t20), [TEST:IT1.8](TESTS.md#it18)
+**Alignment**: [ARCH:CC5.1.4](ARCHITECTURE.md#cc514), TASK:T20, [TEST:IT1.8](TESTS.md#it18)
 
 ### FR1.10: Confirmations
 System shall provide webhook endpoints per channel with signature verification. Poll providers when required. Maintain normalised states and timestamps (sent/accepted/delivered/read).
 
-**Alignment**: [ARCH:CP2.1](ARCHITECTURE.md#cp21), [TASK:T7](TASKS.md#t7), [TEST:IT1.9](TESTS.md#it19)
+**Alignment**: [ARCH:CP2.1](ARCHITECTURE.md#cp21), TASK:T7, [TEST:IT1.9](TESTS.md#it19)
 
 ### FR1.11: Reliability & Controls
 System shall provide per-channel and per-destination rate limits (N per minute/hour/day). Circuit breaker: soft/hard error thresholds flip to degraded/unavailable. Backoff with jitter; categorise errors as transient/permanent. TTL expiry transitions pending jobs to `ttl_expired`.
 
-**Alignment**: [ARCH:CP1.1](ARCHITECTURE.md#cp11), [TASK:T12](TASKS.md#t12), [TEST:ST1.2](TESTS.md#st12)
+**Alignment**: [ARCH:CP1.1](ARCHITECTURE.md#cp11), TASK:T12, [TEST:ST1.2](TESTS.md#st12)
 
 ### FR1.12: Observability
 System shall provide structured logs with redaction. Metrics: send_rate, delivery_rate, error_rate, retry_count, ttl_drops, queue_depth. Traces around adapter operations.
 
-**Alignment**: [ARCH:MO1.1](ARCHITECTURE.md#mo11), [TASK:T33](TASKS.md#t33), [TEST:ST1.3](TESTS.md#st13)
+**Alignment**: [ARCH:MO1.1](ARCHITECTURE.md#mo11), TASK:T33, [TEST:ST1.3](TESTS.md#st13)
 
 ### FR1.13: Web UI/Admin
 System shall provide Web UI/Admin with: Queue/Jobs dashboard (filters, bulk actions). Messages & deliveries with receipts and audit. Channels CRUD (+enable/disable, test send, limits, preferences, restrictions). Users CRUD (admin only): password reset, preferences, destinations, group membership. Groups CRUD: Create/manage groups, assign preferences, keywords, language defaults. LLM Prompts Management: Create/edit prompts for channels, groups, languages, keywords. User Lookup: Search users by name, email, username; view destinations and preferences. LDAP/Keycloak Integration: Configure and sync external user sources. Status/metrics, logs/config (masked).
@@ -195,7 +195,7 @@ Additional Web UI requirements:
 - **Message Management**: Review, cancel, resend, and inspect delivery metadata.
 - **Prompt Generation**: Create language- and keyword-specific prompts for multi-language flows.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TASK:T23](TASKS.md#t23), [TASK:T24](TASKS.md#t24), [TEST:IT1.4](TESTS.md#it14), [TEST:IT1.5](TESTS.md#it15), [TEST:IT1.6](TESTS.md#it16), [TEST:IT1.7](TESTS.md#it17), [TEST:AT1.8](TESTS.md#at18)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, TASK:T23, TASK:T24, [TEST:IT1.4](TESTS.md#it14), [TEST:IT1.5](TESTS.md#it15), [TEST:IT1.6](TESTS.md#it16), [TEST:IT1.7](TESTS.md#it17), [TEST:AT1.8](TESTS.md#at18)
 
 ### FR1.14: User Management & Personalization
 System shall provide User Management & Personalization:
@@ -207,7 +207,7 @@ System shall provide User Management & Personalization:
 - **LDAP/Keycloak Integration**: Pull user data from external sources (LDAP, Keycloak, corporate databases), Enhance remote data with local preferences/destinations, Merge strategy: remote data as base, local data as overrides/enhancements, Sync schedule: on-demand, scheduled, or real-time via webhooks.
 - **User Lookup**: Fast lookup by username, email, or display name for MCP/A2A interfaces.
 
-**Alignment**: [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), [TASK:T16](TASKS.md#t16), [TASK:T17](TASKS.md#t17), [TASK:T19](TASKS.md#t19), [TEST:AT1.9](TESTS.md#at19)
+**Alignment**: [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), TASK:T16, TASK:T17, TASK:T19, [TEST:AT1.9](TESTS.md#at19)
 
 ### FR1.15: LLM Prompt Management
 System shall provide LLM Prompt Management:
@@ -219,7 +219,7 @@ System shall provide LLM Prompt Management:
 - **Prompt Selection Priority** (highest to lowest): Explicit prompt directive in message request, User keyword-specific prompt, User language-specific prompt, Group keyword-specific prompt, Group language-specific prompt, Channel default prompt.
 - **Prompt Variables**: Support for user context, message content, channel restrictions, etc.
 
-**Alignment**: [ARCH:CC4.1.2](ARCHITECTURE.md#cc412), [TASK:T18](TASKS.md#t18), [TEST:AT1.10](TESTS.md#at110)
+**Alignment**: [ARCH:CC4.1.2](ARCHITECTURE.md#cc412), TASK:T18, [TEST:AT1.10](TESTS.md#at110)
 
 ### FR1.16: Channel Preferences & Restrictions
 System shall provide Channel Preferences & Restrictions:
@@ -227,7 +227,7 @@ System shall provide Channel Preferences & Restrictions:
 - **Channel Restrictions**: Max length (e.g., SMS: 140 chars, Twitter: 280 chars), Allowed formats (text, HTML, Markdown, JSON, media), Media restrictions (no images, max image size, allowed MIME types), Link strategy (inline, summary+link, no links).
 - **Restriction Enforcement**: LLM formatter must respect restrictions when generating content.
 
-**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T6](TASKS.md#t6), [TASK:T8](TASKS.md#t8), [TASK:T20](TASKS.md#t20), [TEST:UT1.5](TESTS.md#ut15)
+**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T6, TASK:T8, TASK:T20, [TEST:UT1.5](TESTS.md#ut15)
 
 ### FR1.17: MCP/A2A Interface Enhancements
 System shall provide MCP/A2A Interface Enhancements:
@@ -236,7 +236,7 @@ System shall provide MCP/A2A Interface Enhancements:
 - **Group Resolution**: Resolve "Admin Users" to group, expand to member list.
 - **Automatic Personalization**: Apply user preferences, select appropriate channel, format with correct prompt, translate if needed.
 
-**Alignment**: [ARCH:CC1.1.3](ARCHITECTURE.md#cc113), [ARCH:CC1.1.4](ARCHITECTURE.md#cc114), [ARCH:AI1.2](ARCHITECTURE.md#ai12), [ARCH:AI1.3](ARCHITECTURE.md#ai13), [TASK:T11](TASKS.md#t11), [TASK:T21](TASKS.md#t21), [TEST:AT1.11](TESTS.md#at111), [TEST:AT1.14](TESTS.md#at114)
+**Alignment**: [ARCH:CC1.1.3](ARCHITECTURE.md#cc113), [ARCH:CC1.1.4](ARCHITECTURE.md#cc114), [ARCH:AI1.2](ARCHITECTURE.md#ai12), [ARCH:AI1.3](ARCHITECTURE.md#ai13), TASK:T11, TASK:T21, [TEST:AT1.11](TESTS.md#at111), [TEST:AT1.14](TESTS.md#at114)
 
 ### FR1.18: PDF Output & Generation
 System shall provide PDF output and generation capabilities:
@@ -258,7 +258,7 @@ System shall provide PDF output and generation capabilities:
   - **Timeouts**: Configurable timeouts for translation (default 900s), formatting (default 600s), and summarization (default 600s).
   - **Script correctness**: For RTL/CJK targets, translated content MUST be produced in the target language’s native script (not Latin-only “leakage” or transliteration), including for PDF-only flows.
 
-**Alignment**: [ARCH:CC5.2](ARCHITECTURE.md#cc52), [ARCH:CC6.1.2](ARCHITECTURE.md#cc612), [TASK:T29](TASKS.md#t29), [TEST:AT1.19](TESTS.md#at119), [TEST:AT1.4_Comprehensive](TESTS.md#at14_comprehensive)
+**Alignment**: [ARCH:CC5.2](ARCHITECTURE.md#cc52), [ARCH:CC6.1.2](ARCHITECTURE.md#cc612), TASK:T29, [TEST:AT1.19](TESTS.md#at119), [TEST:AT1.4_Comprehensive](TESTS.md#at14_comprehensive)
 
 ### FR1.19: Multi-Media Support
 System shall provide embedded and referenced multi-media support:
@@ -291,7 +291,7 @@ System shall provide embedded and referenced multi-media support:
 - **Channel Support**: All channels (Email, Slack, SMS, WhatsApp, File) support appropriate media handling based on channel capabilities.
 - **Format Support**: Media works with all output formats (MD, TXT, PDF, HTML).
 
-**Alignment**: [ARCH:CC5.3](ARCHITECTURE.md#cc53), [ARCH:CC6.1.2](ARCHITECTURE.md#cc612), [TASK:T30](TASKS.md#t30), [TASK:T32](TASKS.md#t32), [TEST:AT1.20](TESTS.md#at120), [TEST:AT1.23](TESTS.md#at123)
+**Alignment**: [ARCH:CC5.3](ARCHITECTURE.md#cc53), [ARCH:CC6.1.2](ARCHITECTURE.md#cc612), TASK:T30, TASK:T32, [TEST:AT1.20](TESTS.md#at120), [TEST:AT1.23](TESTS.md#at123)
 
 ### FR1.20: File Output Channel
 System shall provide File Output Channel for saving notifications to file storage:
@@ -311,7 +311,7 @@ System shall provide File Output Channel for saving notifications to file storag
 - **Error Handling**: Robust error handling for storage failures, network issues, and authentication problems.
 - **API management**: Stored files MUST be accessible via API endpoints for read/update/delete and verification, using backend+filename addressing (e.g. `/storage/files/{backend_type}/{filename}`).
 
-**Alignment**: [ARCH:CC5.1.5](ARCHITECTURE.md#cc515), [ARCH:CC6.1.2](ARCHITECTURE.md#cc612), [TASK:T31](TASKS.md#t31), [TEST:AT1.21](TESTS.md#at121)
+**Alignment**: [ARCH:CC5.1.5](ARCHITECTURE.md#cc515), [ARCH:CC6.1.2](ARCHITECTURE.md#cc612), TASK:T31, [TEST:AT1.21](TESTS.md#at121)
 
 ### FR1.21: Audio and Video Media Support
 System shall provide support for audio and video media formats in addition to images:
@@ -335,7 +335,7 @@ System shall provide support for audio and video media formats in addition to im
   - **Local vs External**: HTML references use <LOCAL_BASE_URL> URLs when duplicated, external URLs when not.
 - **Channel Support**: All channels support audio/video references appropriately (links in text channels, embedded in HTML/PDF).
 
-**Alignment**: [ARCH:CC5.3.4](ARCHITECTURE.md#cc534), [ARCH:CC6.1.3](ARCHITECTURE.md#cc613), [TASK:T32](TASKS.md#t32), [TEST:AT1.22](TESTS.md#at122)
+**Alignment**: [ARCH:CC5.3.4](ARCHITECTURE.md#cc534), [ARCH:CC6.1.3](ARCHITECTURE.md#cc613), TASK:T32, [TEST:AT1.22](TESTS.md#at122)
 
 ### FR1.22: HTML Page Generation for Personalized Content
 System shall provide HTML page generation capabilities for personalized multimedia content:
@@ -351,7 +351,7 @@ System shall provide HTML page generation capabilities for personalized multimed
 - **Email Integration**: Email notifications can include links to personalized HTML pages.
 - **Media Reference Strategy**: HTML pages support both local storage references (<LOCAL_BASE_URL> URLs) and external references based on channel settings.
 
-**Alignment**: [ARCH:CC5.3.5](ARCHITECTURE.md#cc535), [ARCH:CC6.1.3](ARCHITECTURE.md#cc613), [TASK:T32](TASKS.md#t32), [TEST:AT1.24](TESTS.md#at124)
+**Alignment**: [ARCH:CC5.3.5](ARCHITECTURE.md#cc535), [ARCH:CC6.1.3](ARCHITECTURE.md#cc613), TASK:T32, [TEST:AT1.24](TESTS.md#at124)
 
 ### FR1.23: Channel-Level Media Duplication Settings
 System shall provide channel-level configuration for media duplication behaviour:
@@ -362,12 +362,12 @@ System shall provide channel-level configuration for media duplication behaviour
 - **Storage Management**: Duplicated media stored in organized structure (images/, audio/, video/ directories).
 - **URL Generation**: When duplicated, media references use <LOCAL_BASE_URL> URLs. When not duplicated, original URLs are used.
 
-**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [ARCH:CC5.3.6](ARCHITECTURE.md#cc536), [TASK:T32](TASKS.md#t32), [TEST:ST1.6](TESTS.md#st16)
+**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [ARCH:CC5.3.6](ARCHITECTURE.md#cc536), TASK:T32, [TEST:ST1.6](TESTS.md#st16)
 
 ### FR1.24: Message Management API
 System shall provide API endpoints for message management: DELETE /messages/{id} to permanently delete messages and all associated data (deliveries, receipts), POST /messages/{id}/cancel to cancel pending deliveries without deletion. All database operations must go through API endpoints; direct database access is prohibited.
 
-**Alignment**: [ARCH:AI1.1](ARCHITECTURE.md#ai11), [TASK:T9](TASKS.md#t9), [TEST:IT1.19](TESTS.md#it119)
+**Alignment**: [ARCH:AI1.1](ARCHITECTURE.md#ai11), TASK:T9, [TEST:IT1.19](TESTS.md#it119)
 
 ### FR1.25: LLM Context Budget & Chunking Guardrails
 System shall enforce LLM context window limits and guardrails for all LLM operations (formatting, summarization, translation):
@@ -379,7 +379,7 @@ System shall enforce LLM context window limits and guardrails for all LLM operat
 - **Fail Fast on Overflow**: If chunking still cannot fit within limits after configured rounds, the system MUST fail with a clear, actionable error.
 - **Configuration-Driven**: All limits and chunking behaviour must be configurable and logged.
 
-**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T20](TASKS.md#t20), [TEST:UT1.5](TESTS.md#ut15)
+**Alignment**: [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T20, [TEST:UT1.5](TESTS.md#ut15)
 
 ### FR1.26: MCP Transport & JSON-RPC Compliance
 System shall provide full MCP transport compatibility and JSON-RPC compliance across all supported modes:
@@ -409,7 +409,7 @@ System shall provide full MCP transport compatibility and JSON-RPC compliance ac
   - For streamable HTTP and legacy SSE, support clean session open/use/terminate behaviour.
   - For async jobs, resolve to completion within configured timeout, returning explicit error on timeout.
 
-**Alignment**: [ARCH:CC1.1.3](ARCHITECTURE.md#cc113), [ARCH:AI1.2](ARCHITECTURE.md#ai12), [TASK:T11](TASKS.md#t11), [TEST:IT1.20](TESTS.md#it120), [TEST:IT1.21](TESTS.md#it121), [TEST:IT1.22](TESTS.md#it122), [TEST:IT1.23](TESTS.md#it123), [TEST:IT1.24](TESTS.md#it124), [TEST:ST1.20](TESTS.md#st120)
+**Alignment**: [ARCH:CC1.1.3](ARCHITECTURE.md#cc113), [ARCH:AI1.2](ARCHITECTURE.md#ai12), TASK:T11, [TEST:IT1.20](TESTS.md#it120), [TEST:IT1.21](TESTS.md#it121), [TEST:IT1.22](TESTS.md#it122), [TEST:IT1.23](TESTS.md#it123), [TEST:IT1.24](TESTS.md#it124), [TEST:ST1.20](TESTS.md#st120)
 
 ### FR1.27: Notification Web UI Route Contract (`UI-P5-NTFY-REQ`)
 The monorepo frontend app `@cloud-dog/app-notification-agent` SHALL expose and maintain the following route contract:
@@ -424,7 +424,7 @@ The monorepo frontend app `@cloud-dog/app-notification-agent` SHALL expose and m
 
 Unknown or unauthorized navigation SHALL resolve deterministically to login or an authenticated shell route according to session state.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.28: Users Page Contract (`UI-P5-NTFY-REQ`)
 The Users page SHALL provide user management capabilities:
@@ -436,7 +436,7 @@ The Users page SHALL provide user management capabilities:
 
 The page SHALL be reachable from authenticated navigation and integrated with real backend APIs through runtime configuration.
 
-**Alignment**: [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), [TASK:T16](TASKS.md#t16), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), TASK:T16, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.29: Channels Page Contract (`UI-P5-NTFY-REQ`)
 The Channels page SHALL provide channel management capabilities:
@@ -447,7 +447,7 @@ The Channels page SHALL provide channel management capabilities:
 
 Channel actions SHALL be wired to backend channel APIs and enforce authenticated access.
 
-**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), [TASK:T6](TASKS.md#t6), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC5.1](ARCHITECTURE.md#cc51), TASK:T6, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.30: Notifications Page Contract (`UI-P5-NTFY-REQ`)
 The notifications workflow (Messages + Deliveries pages) SHALL support:
@@ -457,7 +457,7 @@ The notifications workflow (Messages + Deliveries pages) SHALL support:
 
 UI status views SHALL reflect backend delivery state without synthetic success fallbacks.
 
-**Alignment**: [ARCH:AI1.1](ARCHITECTURE.md#ai11), [ARCH:CP2.1](ARCHITECTURE.md#cp21), [TASK:T9](TASKS.md#t9), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:AI1.1](ARCHITECTURE.md#ai11), [ARCH:CP2.1](ARCHITECTURE.md#cp21), TASK:T9, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.31: Settings and Runtime Config Contract (`UI-P5-NTFY-REQ`)
 The Settings page SHALL expose runtime-relevant configuration visibility for operators.
@@ -471,7 +471,7 @@ The UI runtime contract SHALL be provided via `window.__RUNTIME_CONFIG__` and in
 
 Frontend components SHALL read runtime endpoints/auth mode from `__RUNTIME_CONFIG__` rather than hardcoded values.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.32: Web UI Auth Flow (`UI-P5-NTFY-REQ`)
 The UI SHALL implement login/logout and authenticated session flow:
@@ -482,14 +482,14 @@ The UI SHALL implement login/logout and authenticated session flow:
 
 Auth mode SHALL support configured cookie or OIDC operation.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.33: Web UI Accessibility Baseline (`UI-P5-NTFY-REQ`)
 Core notification UI routes SHALL meet WCAG 2.x AA baseline checks in automated a11y validation.
 
 Interactive controls SHALL expose accessible names suitable for role-based and assistive-technology usage.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR1.34: Job Control WebUI (`UI-P5-NTFY-REQ`)
 The Jobs page SHALL comply with PS-76 Job Control WebUI Standard using `@cloud-dog/ui` `DataTable`, `EntityDialog`, `JsonBlock`, `Badge`, and summary metrics.
@@ -519,19 +519,19 @@ The Jobs page SHALL expose:
 
 All mutating Jobs actions SHALL emit audit events via `cloud_dog_logging`.
 
-**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), [TASK:T10](TASKS.md#t10), [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
+**Alignment**: [ARCH:CC1.1.2](ARCHITECTURE.md#cc112), TASK:T10, [TEST:UI-P5-NTFY-TST](TESTS.md#web-ui-traceability-ui-p5-ntfy-tst)
 
 ### FR-P001: Delivery Resend/Abort
 The server SHALL provide resend and abort operations on delivery resources.
 Resend SHALL re-queue the delivery for execution. Abort SHALL cancel an in-progress delivery.
 
-**Alignment**: [ARCH:SW1.1](ARCHITECTURE.md#sw11), [TASK:T12](TASKS.md#t12), [TEST:IT1.27](TESTS.md#it127)
+**Alignment**: [ARCH:SW1.1](ARCHITECTURE.md#sw11), TASK:T12, [TEST:IT1.27](TESTS.md#it127)
 
 ### FR-P002: A2A Event Streaming
 The server SHALL publish delivery lifecycle events (created, queued, started, completed, failed)
 via A2A event streaming topics for real-time monitoring.
 
-**Alignment**: [ARCH:CC1.1.4](ARCHITECTURE.md#cc114), [TASK:T11](TASKS.md#t11)
+**Alignment**: [ARCH:CC1.1.4](ARCHITECTURE.md#cc114), TASK:T11
 
 ---
 
@@ -540,27 +540,27 @@ via A2A event streaming topics for real-time monitoring.
 ### UC1.1: Send Broadcast Notification
 As a system administrator, I want to send a broadcast notification to all users via their preferred channel so that important announcements reach everyone.
 
-**Alignment**: [REQ:FR1.1](REQUIREMENTS.md#fr11), [ARCH:AI1.1](ARCHITECTURE.md#ai11), [ARCH:CC2.1.1](ARCHITECTURE.md#cc211), [TASK:T5](TASKS.md#t5), [TASK:T6](TASKS.md#t6), [TASK:T9](TASKS.md#t9), [TEST:AT1.12](TESTS.md#at112)
+**Alignment**: [REQ:FR1.1](REQUIREMENTS.md#fr11), [ARCH:AI1.1](ARCHITECTURE.md#ai11), [ARCH:CC2.1.1](ARCHITECTURE.md#cc211), TASK:T5, TASK:T6, TASK:T9, [TEST:AT1.12](TESTS.md#at112)
 
 ### UC1.2: Send Personalised Notification
 As a user, I want to receive personalised notifications formatted according to my language, channel preference, and content style so that information is presented in the most useful way for me.
 
-**Alignment**: [REQ:FR1.2](REQUIREMENTS.md#fr12), [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T8](TASKS.md#t8), [TASK:T16](TASKS.md#t16), [TASK:T20](TASKS.md#t20), [TEST:AT1.13](TESTS.md#at113)
+**Alignment**: [REQ:FR1.2](REQUIREMENTS.md#fr12), [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T8, TASK:T16, TASK:T20, [TEST:AT1.13](TESTS.md#at113)
 
 ### UC1.3: Natural Language Command
 As an agent, I want to send notifications using natural language commands like "Send a notification to Fred that JOB XXXX has finished" so that I can interact with the system naturally.
 
-**Alignment**: [REQ:FR1.17](REQUIREMENTS.md#fr117), [ARCH:CC1.1.3](ARCHITECTURE.md#cc113), [ARCH:CC1.1.4](ARCHITECTURE.md#cc114), [ARCH:AI1.2](ARCHITECTURE.md#ai12), [ARCH:AI1.3](ARCHITECTURE.md#ai13), [TASK:T11](TASKS.md#t11), [TASK:T21](TASKS.md#t21), [TEST:AT1.14](TESTS.md#at114)
+**Alignment**: [REQ:FR1.17](REQUIREMENTS.md#fr117), [ARCH:CC1.1.3](ARCHITECTURE.md#cc113), [ARCH:CC1.1.4](ARCHITECTURE.md#cc114), [ARCH:AI1.2](ARCHITECTURE.md#ai12), [ARCH:AI1.3](ARCHITECTURE.md#ai13), TASK:T11, TASK:T21, [TEST:AT1.14](TESTS.md#at114)
 
 ### UC1.4: Manage User Preferences
 As an administrator, I want to manage user preferences including language, channel preferences, and personalization keywords so that notifications are properly customized.
 
-**Alignment**: [REQ:FR1.14](REQUIREMENTS.md#fr114), [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), [TASK:T16](TASKS.md#t16), [TASK:T17](TASKS.md#t17), [TEST:AT1.15](TESTS.md#at115)
+**Alignment**: [REQ:FR1.14](REQUIREMENTS.md#fr114), [ARCH:CC3.1.1](ARCHITECTURE.md#cc311), TASK:T16, TASK:T17, [TEST:AT1.15](TESTS.md#at115)
 
 ### UC1.5: Configure LLM Prompts
 As an administrator, I want to configure LLM prompts for different channels, groups, languages, and keywords so that message formatting matches organizational needs.
 
-**Alignment**: [REQ:FR1.15](REQUIREMENTS.md#fr115), [ARCH:CC4.1.2](ARCHITECTURE.md#cc412), [TASK:T18](TASKS.md#t18), [TEST:AT1.16](TESTS.md#at116)
+**Alignment**: [REQ:FR1.15](REQUIREMENTS.md#fr115), [ARCH:CC4.1.2](ARCHITECTURE.md#cc412), TASK:T18, [TEST:AT1.16](TESTS.md#at116)
 
 ### UC1.6: Group Notification with Multimedia and Multi-Language PDFs (Enhanced)
 As an agent flow, I want to send markdown content with images and video to a group of users across multiple channels, with each user receiving content in their preferred language and format, so that all users receive personalized multimedia notifications in their preferred format and channel.
@@ -575,7 +575,7 @@ As an agent flow, I want to send markdown content with images and video to a gro
 - PDFs include embedded images and <LOCAL_BASE_URL> references to video files
 - All formats include proper image embedding and video references
 
-**Alignment**: [REQ:FR1.18](REQUIREMENTS.md#fr118), [REQ:FR1.19](REQUIREMENTS.md#fr119), [REQ:FR1.21](REQUIREMENTS.md#fr121), [REQ:FR1.20](REQUIREMENTS.md#fr120), [REQ:FR1.2](REQUIREMENTS.md#fr12), [ARCH:CC5.2](ARCHITECTURE.md#cc52), [ARCH:CC5.3](ARCHITECTURE.md#cc53), [TASK:T29](TASKS.md#t29), [TASK:T30](TASKS.md#t30), [TASK:T32](TASKS.md#t32), [TASK:T31](TASKS.md#t31), [TEST:AT1.23](TESTS.md#at123)
+**Alignment**: [REQ:FR1.18](REQUIREMENTS.md#fr118), [REQ:FR1.19](REQUIREMENTS.md#fr119), [REQ:FR1.21](REQUIREMENTS.md#fr121), [REQ:FR1.20](REQUIREMENTS.md#fr120), [REQ:FR1.2](REQUIREMENTS.md#fr12), [ARCH:CC5.2](ARCHITECTURE.md#cc52), [ARCH:CC5.3](ARCHITECTURE.md#cc53), TASK:T29, TASK:T30, TASK:T32, TASK:T31, [TEST:AT1.23](TESTS.md#at123)
 
 ### UC1.7: Personalized Multimedia Notifications with HTML Pages (Enhanced)
 As an agentic flow, I want to send a detailed description personalized for multiple users (via keywords) across multiple channels, with each user receiving content in their preferred channel and format, so that users receive highly customized multimedia content.
@@ -592,7 +592,7 @@ As an agentic flow, I want to send a detailed description personalized for multi
 - All formats include embedded images and video references
 - All languages properly translated with media preserved
 
-**Alignment**: [REQ:FR1.22](REQUIREMENTS.md#fr122), [REQ:FR1.19](REQUIREMENTS.md#fr119), [REQ:FR1.21](REQUIREMENTS.md#fr121), [REQ:FR1.20](REQUIREMENTS.md#fr120), [REQ:FR1.2](REQUIREMENTS.md#fr12), [REQ:FR1.14](REQUIREMENTS.md#fr114), [ARCH:CC5.3.5](ARCHITECTURE.md#cc535), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), [TASK:T30](TASKS.md#t30), [TASK:T32](TASKS.md#t32), [TASK:T31](TASKS.md#t31), [TASK:T13](TASKS.md#t13), [TEST:AT1.24](TESTS.md#at124)
+**Alignment**: [REQ:FR1.22](REQUIREMENTS.md#fr122), [REQ:FR1.19](REQUIREMENTS.md#fr119), [REQ:FR1.21](REQUIREMENTS.md#fr121), [REQ:FR1.20](REQUIREMENTS.md#fr120), [REQ:FR1.2](REQUIREMENTS.md#fr12), [REQ:FR1.14](REQUIREMENTS.md#fr114), [ARCH:CC5.3.5](ARCHITECTURE.md#cc535), [ARCH:CC4.1.1](ARCHITECTURE.md#cc411), TASK:T30, TASK:T32, TASK:T31, TASK:T13, [TEST:AT1.24](TESTS.md#at124)
 
 ### UC1.8: Storage/Output Channel with Multi-Format and Multi-Language Support
 As a system administrator, I want to save notifications to storage in multiple formats and languages with embedded multimedia, so that I have a complete archive of all notifications in all supported formats and languages.
@@ -639,7 +639,7 @@ storage/output/
       message.txt
 ```
 
-**Alignment**: [REQ:FR1.20](REQUIREMENTS.md#fr120), [REQ:FR1.18](REQUIREMENTS.md#fr118), [REQ:FR1.19](REQUIREMENTS.md#fr119), [REQ:FR1.21](REQUIREMENTS.md#fr121), [TASK:T31](TASKS.md#t31), [TEST:AT1.25](TESTS.md#at125)
+**Alignment**: [REQ:FR1.20](REQUIREMENTS.md#fr120), [REQ:FR1.18](REQUIREMENTS.md#fr118), [REQ:FR1.19](REQUIREMENTS.md#fr119), [REQ:FR1.21](REQUIREMENTS.md#fr121), TASK:T31, [TEST:AT1.25](TESTS.md#at125)
 
 ### UC1.9: Multi-Channel Multimedia Delivery with All Formats
 As an agentic flow, I want to send multimedia notifications to users via multiple channels simultaneously, with each channel receiving content in the appropriate format, so that users can access notifications through their preferred channel in their preferred format.
@@ -664,17 +664,17 @@ As an agentic flow, I want to send multimedia notifications to users via multipl
 ### CS1.1: Authentication
 System shall provide local auth (bcrypt/argon2), session cookies (HttpOnly, Secure). API keys for programmatic access; key rotation; scope/role binding.
 
-**Alignment**: [ARCH:SE1.1](ARCHITECTURE.md#se11), [TASK:T29](TASKS.md#t29), [TEST:ST1.4](TESTS.md#st14)
+**Alignment**: [ARCH:SE1.1](ARCHITECTURE.md#se11), TASK:T29, [TEST:ST1.4](TESTS.md#st14)
 
 ### CS1.2: Secret Management
 System shall provide secret management; TLS in production.
 
-**Alignment**: [ARCH:SE1.2](ARCHITECTURE.md#se12), [TASK:T30](TASKS.md#t30), [TEST:ST1.5](TESTS.md#st15)
+**Alignment**: [ARCH:SE1.2](ARCHITECTURE.md#se12), TASK:T30, [TEST:ST1.5](TESTS.md#st15)
 
 ### CS1.3: Audit Events
 System shall provide audit events for all admin actions.
 
-**Alignment**: [ARCH:SE1.3](ARCHITECTURE.md#se13), [TASK:T31](TASKS.md#t31), [TEST:ST1.6](TESTS.md#st16)
+**Alignment**: [ARCH:SE1.3](ARCHITECTURE.md#se13), TASK:T31, [TEST:ST1.6](TESTS.md#st16)
 
 ---
 
@@ -683,13 +683,13 @@ System shall provide audit events for all admin actions.
 ### NF1.1: Performance
 System shall provide submit-to-queue < 50ms p95; adapter latency surfaced in metrics.
 
-**Alignment**: [ARCH:SP1.1](ARCHITECTURE.md#sp11), [TASK:T32](TASKS.md#t32), [TEST:ST1.14](TESTS.md#st114)
+**Alignment**: [ARCH:SP1.1](ARCHITECTURE.md#sp11), TASK:T32, [TEST:ST1.14](TESTS.md#st114)
 
 ### NF1.2: Availability
 System shall provide health checks, degraded modes, default channel required.
 - `/health` MUST return `app`, `server`, and `env_file` metadata for each server.
 
-**Alignment**: [ARCH:RR1.1](ARCHITECTURE.md#rr11), [TASK:T33](TASKS.md#t33), [TEST:ST1.8](TESTS.md#st18), [TEST:ST1.19](TESTS.md#st119)
+**Alignment**: [ARCH:RR1.1](ARCHITECTURE.md#rr11), TASK:T33, [TEST:ST1.8](TESTS.md#st18), [TEST:ST1.19](TESTS.md#st119)
 
 **Additional Availability Expectations**:
 - The system SHALL detect and recover from deliveries stuck in intermediate workflow states (e.g. `formatting`) by transitioning them to a retryable state (e.g. `soft_failed`) with backoff, to avoid indefinite stalls.
@@ -698,12 +698,12 @@ System shall provide health checks, degraded modes, default channel required.
 ### NF1.3: Scalability
 System shall support horizontal workers; stateless API nodes; work-queue backed.
 
-**Alignment**: [ARCH:SP1.2](ARCHITECTURE.md#sp12), [TASK:T34](TASKS.md#t34), [TEST:ST1.9](TESTS.md#st19)
+**Alignment**: [ARCH:SP1.2](ARCHITECTURE.md#sp12), TASK:T34, [TEST:ST1.9](TESTS.md#st19)
 
 ### NF1.4: Compliance
 System shall provide configurable retention; PII minimisation; GDPR-friendly exports.
 
-**Alignment**: [ARCH:SE1.4](ARCHITECTURE.md#se14), [TASK:T35](TASKS.md#t35), [TEST:ST1.10](TESTS.md#st110)
+**Alignment**: [ARCH:SE1.4](ARCHITECTURE.md#se14), TASK:T35, [TEST:ST1.10](TESTS.md#st110)
 
 ### NF1.5: Portability
 System shall be containerised build; env-driven configuration.
@@ -719,22 +719,22 @@ Additional portability requirements:
 - Tests MUST use environment variables or `--env` flag, never hard-code values
 - Configuration priority: OS Environment Variables (highest) -> env file (--env) -> config.yaml -> defaults.yaml (lowest)
 
-**Alignment**: [ARCH:DA1.1](ARCHITECTURE.md#da11), [ARCH:CM1.1](ARCHITECTURE.md#cm11), [TASK:T36](TASKS.md#t36), [TEST:ST1.11](TESTS.md#st111), [TEST:ST1.20](TESTS.md#st120)
+**Alignment**: [ARCH:DA1.1](ARCHITECTURE.md#da11), [ARCH:CM1.1](ARCHITECTURE.md#cm11), TASK:T36, [TEST:ST1.11](TESTS.md#st111), [TEST:ST1.20](TESTS.md#st120)
 
 ### NF1.6: Testability
 System shall provide unit/integration/E2E suites; provider simulators; fixtures.
 
-**Alignment**: [ARCH:TS1.1](ARCHITECTURE.md#ts11), [TASK:T37](TASKS.md#t37), [TEST:UT1.3](TESTS.md#ut13)
+**Alignment**: [ARCH:TS1.1](ARCHITECTURE.md#ts11), TASK:T37, [TEST:UT1.3](TESTS.md#ut13)
 
 ### NF1.7: Auditability
 System shall maintain a per-message auditable log containing all significant events: message submission, formatted content, send attempts, channel transactions, confirmation callbacks, state transitions, and errors. Each auditable log entry must be signed with a cryptographic certificate generated from a provided or generated key, ensuring authenticity and non-repudiation. All entries include a precise datetime stamp, referencing the origin message, sender context, delivery details, and associated transaction/confirmation records. Allow export or verification of the signed audit trail for compliance and dispute resolution.
 
-**Alignment**: [ARCH:SE1.3](ARCHITECTURE.md#se13), [TASK:T38](TASKS.md#t38), [TEST:ST1.12](TESTS.md#st112)
+**Alignment**: [ARCH:SE1.3](ARCHITECTURE.md#se13), TASK:T38, [TEST:ST1.12](TESTS.md#st112)
 
 ### NF1.8: Data Retention & Privacy
 System shall provide configurable retention windows for messages, deliveries, receipts and logs. Redact or hash sensitive content at rest where possible; store links for large payloads. Data lifecycle management and deletion based on settings, to remove content inline with DPA.
 
-**Alignment**: [ARCH:DM1.1](ARCHITECTURE.md#dm11), [TASK:T39](TASKS.md#t39), [TEST:ST1.13](TESTS.md#st113)
+**Alignment**: [ARCH:DM1.1](ARCHITECTURE.md#dm11), TASK:T39, [TEST:ST1.13](TESTS.md#st113)
 
 ---
 
@@ -974,7 +974,7 @@ Mandatory schema per PS-REQ-TEST-TRACE v1.0 §3.4. Every project covers anon-den
 
 ## Recovered domain content — `archive/2026-06-12/DESCRIPTION.md` (65 lines)
 
-_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `cloud-dog-ai-platform-standards/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/DESCRIPTION.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
+_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `public release checklist/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/DESCRIPTION.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
 
 # Apache-2.0 (C) Cloud-Dog, Cloud-Dog Engineering
 

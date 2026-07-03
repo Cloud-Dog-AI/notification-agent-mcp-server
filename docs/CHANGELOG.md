@@ -21,7 +21,7 @@ _Created by W28C-1710a recovery to receive carry-forward content from `archive/2
 
 ## Recovered domain content — `archive/2026-06-12/ACCEPTED-GAPS.md` (19 lines)
 
-_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `cloud-dog-ai-platform-standards/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/ACCEPTED-GAPS.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
+_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `public release checklist/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/ACCEPTED-GAPS.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
 
 # Accepted Gaps
 
@@ -48,7 +48,7 @@ revisit date, and sign-off.
 
 ## Recovered domain content — `archive/2026-06-12/TASKS.md` (16 lines)
 
-_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `cloud-dog-ai-platform-standards/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/TASKS.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
+_This section carries forward the full content of the archived predecessor doc verbatim. Topic checklist + SHA256 chain in `public release checklist/working/evidence/W28C-1710a/per-doc/notification-agent-mcp-server/TASKS.md.topics.tsv`. Archive contents are unchanged (sha256 stable)._
 
 # Tasks
 

@@ -134,7 +134,7 @@ class TestSlackPreviewContent:
     def test_view_full_message_link_in_long_content(self):
         """When text includes a View full message link, it appears in payload."""
         title = "Ukraine digest"
-        link = "<https://notificationagent0.cloud-dog.net/messages/abc123|View full message (5000 characters)>"
+        link = "<https://notification-agent.example.com/messages/abc123|View full message (5000 characters)>"
         body = "Summary of the digest content.\n" + link
         payload = _build_slack_payload(body, title)
         assert "View full message" in payload["text"]

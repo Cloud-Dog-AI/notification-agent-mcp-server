@@ -162,7 +162,7 @@ Each comprehensive test validates:
 
 #### Run ONE test at a time (RECOMMENDED)
 ```bash
-cd /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server
+cd /path/to/cloud-dog-ai/notification-agent-mcp-server
 source .venv/bin/activate
 
 # Test 1: EN → FR, 400 chars
@@ -341,4 +341,4 @@ Based on comprehensive review:
 *Generated: 2025-12-31*  
 *Test Suite: AT1.5 Email Channel Comprehensive Tests*  
 *Status: READY FOR EXECUTION*  
-*Repository: /opt/iac/Development/cloud-dog-ai/notification-agent-mcp-server*
+*Repository: /path/to/cloud-dog-ai/notification-agent-mcp-server*

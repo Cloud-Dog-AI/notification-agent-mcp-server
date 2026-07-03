@@ -6,7 +6,7 @@ This is a test message containing an image reference for testing T32 multimedia 
 
 Here is an important notification about system status.
 
-![System Status](<IMAGE_URL>)
+Set `IMAGE_URL` to a local or hosted test image before running the example.
 
 The image above shows the current system status dashboard.
 

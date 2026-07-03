@@ -6,7 +6,7 @@ registry: service
 required: must-have
 when-applicable: ""
 template-last-updated: 2026-06-12
-template-owner: platform-standards
+template-owner: public-standards
 
 project: notification-agent-mcp-server
 doc-last-updated: 2026-06-18
@@ -39,7 +39,7 @@ Build the public image (single public index, default `https://pypi.org/simple`):
 See [EXTERNAL-BUILD.md](EXTERNAL-BUILD.md) for the full external-builder workflow
 (Linux/macOS/Windows, Docker and pure-source paths, and evidence return).
 
-Run the local smoke by executing the shell block in [PUBLICATION-SMOKE.md](PUBLICATION-SMOKE.md) with `TAG=latest-gitea-test`.
+Run the local smoke by executing the shell block in [PUBLICATION-SMOKE.md](PUBLICATION-SMOKE.md) with `TAG=latest-public-test`.
 
 The smoke run uses [env.example](env.example) and probes:
 

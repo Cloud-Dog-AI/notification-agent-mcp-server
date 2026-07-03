@@ -77,7 +77,7 @@ def test_slack_summary_link_preview_preserves_news_formatting() -> None:
             "id": 1,
         },
         {},
-        "<https://notificationagent0.cloud-dog.net/messages/abc|View full message (1234 characters)>",
+        "<https://notification-agent.example.com/messages/abc|View full message (1234 characters)>",
         restrictions={"link_strategy": "summary+link", "max_length": 900},
         user_prefs={"language": "en"},
     )

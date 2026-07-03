@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 if [[ -z "${VAULT_ADDR:-}" || -z "${VAULT_TOKEN:-}" ]]; then
-  echo "ERROR: VAULT_ADDR/VAULT_TOKEN are not set. Source env-vault first." >&2
-  echo "Hint: set -a; source /opt/iac/Development/cloud-dog-ai/env-vault; set +a" >&2
+  echo "ERROR: VAULT_ADDR/VAULT_TOKEN are not set. Source env-public first." >&2
+  echo "Hint: set -a; source /path/to/cloud-dog-ai/env-public; set +a" >&2
   exit 2
 fi
 
