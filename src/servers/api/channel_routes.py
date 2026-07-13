@@ -12,6 +12,7 @@ class ChannelConfig(BaseModel):
     name: str = Field(..., description="Channel name")
     type: str = Field(..., description="Channel type (smtp, sms, whatsapp, chat_rest)")
     enabled: Optional[bool] = Field(default=True, description="Whether channel is enabled")
+    description: Optional[str] = Field(default=None, description="Human-readable channel description")
     config: Optional[Dict[str, Any]] = Field(default=None, description="Channel-specific config")
     limits: Optional[Dict[str, Any]] = Field(default=None, description="Rate limits")
 
@@ -25,22 +26,34 @@ class TestChannelRequest(BaseModel):
 @router.get("/channels", dependencies=[Depends(verify_api_key)])
 async def list_channels(request: Request):
     """List all channels (W28A-744: scoped to the caller's RBAC bindings — IDAM-B2 §2.3)."""
-    # Run blocking database operation in thread pool to avoid blocking event loop
+    # Load channel rows and their delivery summaries together in the worker
+    # pool.  The previous per-channel COUNT(DISTINCT ...)/MAX(...) loop ran on
+    # the API event loop and forced SQLite to revisit pages in the 1.7 GB
+    # deliveries table once per channel.  A cold Channels fetch consequently
+    # froze health and every concurrent WebUI request for ~38 seconds.
+    def _load_channels_with_stats():
+        rows = channel_repo.list_all()
+        stats_rows = db.fetchall(
+            """
+            SELECT
+                channel_id,
+                COUNT(DISTINCT message_id) AS message_count,
+                MAX(created_at) AS last_used
+            FROM deliveries
+            GROUP BY channel_id
+            """
+        )
+        stats_by_channel = {int(row["channel_id"]): row for row in stats_rows}
+        return rows, stats_by_channel
+
     loop = asyncio.get_event_loop()
-    channels = await loop.run_in_executor(None, channel_repo.list_all)
+    channels, stats_by_channel = await loop.run_in_executor(None, _load_channels_with_stats)
     # IDAM-B2 cascade list-filter: a GROUPUSER sees ONLY channels bound to their group.
     channels = _scope_channels_for_caller(request, channels)
 
     # Mask sensitive config
     for channel in channels:
-        stats = db.fetchone(
-            """
-            SELECT COUNT(DISTINCT message_id) AS message_count, MAX(created_at) AS last_used
-            FROM deliveries
-            WHERE channel_id = ?
-            """,
-            (channel["id"],),
-        )
+        stats = stats_by_channel.get(int(channel["id"]), {})
         channel["message_count"] = int((stats or {}).get("message_count") or 0)
         channel["last_used"] = (stats or {}).get("last_used")
         if channel["config_json"]:
@@ -99,6 +112,7 @@ async def create_channel(channel_config: ChannelConfig, request: Request):
         name=channel_config.name,
         channel_type=channel_config.type,
         enabled=channel_config.enabled,
+        description=channel_config.description,
         config_json=json.dumps(channel_config.config) if channel_config.config else None,
         limits_json=json.dumps(channel_config.limits) if channel_config.limits else None,
     )
@@ -115,6 +129,7 @@ async def create_channel(channel_config: ChannelConfig, request: Request):
         "name": channel_config.name,
         "type": channel_config.type,
         "enabled": channel_config.enabled,
+        "description": channel_config.description,
         "config": channel_config.config or {},
         "limits": channel_config.limits or {},
     }

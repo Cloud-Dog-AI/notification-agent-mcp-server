@@ -86,7 +86,8 @@ class PDFDeliveryHelper:
         content_style: Optional[str] = None,
         user_preference: Optional[str] = None,
         processed_media: Optional[List[Dict[str, Any]]] = None,
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        inline_images: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Generate PDF and prepare for delivery based on preferences
@@ -251,7 +252,8 @@ class PDFDeliveryHelper:
                 content=pdf_content,
                 content_type=pdf_content_type,
                 language=language or 'en',
-                title=pdf_title
+                title=pdf_title,
+                inline_images=inline_images
             )
             
             # Store PDF if storage manager available

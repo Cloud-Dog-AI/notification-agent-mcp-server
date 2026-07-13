@@ -49,6 +49,9 @@ logs/
 # Database
 database/*.db
 database/*.db-journal
+database/*.db-wal
+database/*.db-shm
+database/.nfs*
 database/*.sqlite
 database/*.sqlite3
 *.db

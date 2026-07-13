@@ -151,12 +151,28 @@ class MessageRepository(BaseRepository):
             """
         )
     
+    # Summary columns for the messages LIST view. Deliberately EXCLUDES the large
+    # `content_json` (avg ~180 KB, up to ~9.5 MB per row — ~390 MB across the live
+    # table) and `metadata_json` blobs. `SELECT *` pulled them into every list
+    # response (~18 MB at limit=100), which the async API handler then had to
+    # serialise and the web proxy had to json()-parse synchronously on its event
+    # loop — seconds of head-of-line blocking per call under concurrent WebUI load
+    # (surfaced as slow /auth/me and WebUI E2E timeouts). The WebUI list columns
+    # (id/subject/created_by/channel/recipients/status/created_at) and the MCP list
+    # tool never read the content blob; the full content is fetched per-message via
+    # get_by_id / get_by_guid. `variables_json` IS retained (small — max ~232 B) so
+    # _enrich_subject can still derive the subject for rows with a null subject.
+    _LIST_COLUMNS = (
+        "id, created_at, updated_at, created_by, audience_type, template_ref, "
+        "variables_json, llm_profile, ttl_at, idempotency_key, status, guid, subject"
+    )
+
     def list_messages(self, offset: int = 0, limit: int = 50, status: Optional[str] = None) -> List[Dict]:
-        """List messages with pagination"""
+        """List messages (summary columns only — see `_LIST_COLUMNS`)."""
         if status:
             return self.db.fetchall(
-                """
-                SELECT * FROM messages
+                f"""
+                SELECT {self._LIST_COLUMNS} FROM messages
                 WHERE status = ?
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
@@ -165,8 +181,8 @@ class MessageRepository(BaseRepository):
             )
         else:
             return self.db.fetchall(
-                """
-                SELECT * FROM messages
+                f"""
+                SELECT {self._LIST_COLUMNS} FROM messages
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
                 """,
@@ -331,12 +347,35 @@ class DeliveryRepository(BaseRepository):
             # Fallback if column doesn't exist (shouldn't happen, but handle gracefully)
             logger.warning(f"metadata_json column not found for delivery {delivery_id}: {e}")
     
+    # List/summary column set for the deliveries LIST view. Deliberately EXCLUDES
+    # the two heavy blob columns `personalised_payload` (avg ~0.5 MB, up to ~19 MB
+    # per row) and `metadata_json`: neither the WebUI Deliveries table nor the
+    # confirmations poller (the only two callers) read them, and `SELECT d.*`
+    # forced SQLite to materialise ~1.5 GB of blobs into the ORDER BY temp B-tree
+    # for EVERY list call — a single `list()` took 20+ seconds and, on the
+    # single-worker async web/API servers, blocked the event loop long enough to
+    # fail health checks and cascade every concurrent E2E request into timeouts.
+    # Selecting only the summary columns keeps the list query ~1 s (and sub-100 ms
+    # with the created_at index) while returning the exact same non-blob fields.
+    # A caller that needs the full payload uses get_by_id / the message detail
+    # queries, which SELECT the blob columns explicitly.
+    _LIST_COLUMNS = (
+        "d.id, d.message_id, d.channel_id, d.destination, d.attempt_no, d.state, "
+        "d.last_error, d.next_action_at, d.provider_tracking_id, d.created_at, "
+        "d.updated_at, d.sent_at, d.accepted_at, d.delivered_at, d.read_at"
+    )
+
     def list(self, state: Optional[str] = None, limit: int = 1000, offset: int = 0) -> List[Dict]:
-        """List deliveries, optionally filtered by state."""
+        """List deliveries, optionally filtered by state.
+
+        Returns the delivery SUMMARY columns (all columns except the large
+        `personalised_payload` / `metadata_json` blobs) joined with the channel
+        type/name. See `_LIST_COLUMNS` for why the blobs are excluded.
+        """
         if state:
             return self.db.fetchall(
-                """
-                SELECT d.*, c.type as channel_type, c.name as channel_name
+                f"""
+                SELECT {self._LIST_COLUMNS}, c.type as channel_type, c.name as channel_name
                 FROM deliveries d
                 LEFT JOIN channels c ON d.channel_id = c.id
                 WHERE d.state = ?
@@ -347,8 +386,8 @@ class DeliveryRepository(BaseRepository):
             )
         else:
             return self.db.fetchall(
-                """
-                SELECT d.*, c.type as channel_type, c.name as channel_name
+                f"""
+                SELECT {self._LIST_COLUMNS}, c.type as channel_type, c.name as channel_name
                 FROM deliveries d
                 LEFT JOIN channels c ON d.channel_id = c.id
                 ORDER BY d.created_at DESC
@@ -567,14 +606,15 @@ class ChannelRepository(BaseRepository):
         enabled: bool = True,
         config_json: Optional[str] = None,
         limits_json: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> int:
         """Create a new channel"""
         cursor = self.db.execute(
             """
-            INSERT INTO channels (name, type, enabled, config_json, limits_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO channels (name, type, enabled, description, config_json, limits_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (name, channel_type, enabled, config_json, limits_json)
+            (name, channel_type, enabled, description, config_json, limits_json)
         )
         self.db.commit()
         return cursor.lastrowid

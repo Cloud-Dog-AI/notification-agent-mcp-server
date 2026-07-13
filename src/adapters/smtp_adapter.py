@@ -323,7 +323,30 @@ class SMTPAdapter(ChannelAdapter):
         
         # Check if we have attachments
         attachments = content.get('attachments', [])
-        
+
+        # Check if we have inline (CID) images. Inline images are only meaningful
+        # for HTML bodies (the HTML references them as <img src="cid:NAME">). When
+        # present with an HTML body we assemble a multipart/related tree so Gmail/
+        # Outlook/Apple Mail render the images inline (Gmail strips data: images).
+        inline_images = content.get('inline_images') or []
+        # Cloud-Dog AI branding: logo header + website footer on every HTML email
+        # (also gives a clear end-of-content separator before trailing inline images).
+        if is_html:
+            try:
+                from src.core.branding import brand_email_body
+                body, inline_images = brand_email_body(body, inline_images, has_other_images=bool(inline_images))
+            except Exception:
+                pass
+        if inline_images and is_html:
+            return self._build_message_with_inline_images(
+                destination=destination,
+                subject=subject,
+                body=body,
+                from_header=from_header,
+                attachments=attachments,
+                inline_images=inline_images,
+            )
+
         # If we have attachments, use 'mixed' multipart, otherwise 'alternative'
         if attachments:
             # Mixed multipart for body + attachments
@@ -459,9 +482,164 @@ class SMTPAdapter(ChannelAdapter):
                 if 'MIME-Version' in part:
                     del part['MIME-Version']
                 msg.attach(part)
-        
+
         return msg
-    
+
+    def _build_message_with_inline_images(
+        self,
+        destination: str,
+        subject: str,
+        body: str,
+        from_header: str,
+        attachments: list,
+        inline_images: list,
+    ) -> MIMEMultipart:
+        """
+        Build a MIME message that embeds inline (CID) images for an HTML body.
+
+        The HTML body references each image as <img src="cid:NAME">; this method
+        wraps the HTML alternative part in a multipart/related so the images render
+        inline in Gmail/Outlook/Apple Mail (Gmail strips data: image URIs).
+
+        MIME nesting:
+          - inline images, no attachments:
+                multipart/related [ multipart/alternative [text, html], image... ]
+          - inline images AND attachments:
+                multipart/mixed [ multipart/related [ alternative, image... ], attachment... ]
+
+        The plain-text alternative (HTML stripped) is preserved exactly as the
+        non-inline HTML path produces it.
+        """
+        import re
+        import base64
+        from email.mime.image import MIMEImage
+        from email.mime.base import MIMEBase
+        from email import encoders
+
+        # Build the alternative body (plain-text + HTML), identical to the HTML
+        # branches of _build_message.
+        body_alt = MIMEMultipart('alternative')
+
+        plain_body = re.sub(r'<[^>]+>', '', body)
+        plain_body = re.sub(r'\n\s*\n', '\n\n', plain_body)  # Clean up extra whitespace
+
+        part1 = MIMEText(plain_body, 'plain', 'utf-8')
+        if 'MIME-Version' in part1:
+            del part1['MIME-Version']
+        body_alt.attach(part1)
+
+        part2 = MIMEText(body, 'html', 'utf-8')
+        if 'MIME-Version' in part2:
+            del part2['MIME-Version']
+        body_alt.attach(part2)
+
+        # Wrap the alternative body in multipart/related and attach the inline images.
+        related = MIMEMultipart('related')
+        if 'MIME-Version' in related:
+            del related['MIME-Version']
+        related.attach(body_alt)
+
+        for image in inline_images:
+            if not isinstance(image, dict):
+                continue
+            raw_cid = str(image.get('content_id') or '').strip()
+            if not raw_cid:
+                continue
+            # The HTML references "cid:NAME"; the Content-ID header is "<NAME>".
+            # Strip any surrounding angle brackets the caller may have supplied.
+            cid = raw_cid
+            if cid.startswith('<') and cid.endswith('>'):
+                cid = cid[1:-1]
+
+            image_data = image.get('data') or ''
+            # Skip unresolved upstream interpolation placeholders (e.g. an optional
+            # asset such as a satellite clip that could not be produced this run) —
+            # ``${...}`` is not a real payload; b64decode would silently yield a few
+            # garbage bytes and attach a broken image. Dropping it here keeps the mail
+            # clean; the body template must also omit the corresponding cid reference.
+            if isinstance(image_data, str) and image_data.lstrip().startswith('${'):
+                continue
+            try:
+                image_bytes = base64.b64decode(image_data)
+            except Exception:
+                # Skip images with undecodable payloads rather than failing the send.
+                continue
+
+            content_type = str(image.get('content_type') or 'image/png').strip().lower()
+            subtype = content_type.split('/', 1)[1] if '/' in content_type else content_type
+            if not subtype:
+                subtype = 'png'
+
+            try:
+                image_part = MIMEImage(image_bytes, _subtype=subtype)
+            except Exception:
+                # Fall back to a generic image part if the subtype is unrecognised.
+                image_part = MIMEBase('image', subtype or 'octet-stream')
+                image_part.set_payload(image_bytes)
+                encoders.encode_base64(image_part)
+
+            if 'MIME-Version' in image_part:
+                del image_part['MIME-Version']
+            image_part.add_header('Content-ID', f'<{cid}>')
+            filename = str(image.get('filename') or '').strip()
+            if filename:
+                image_part.add_header('Content-Disposition', 'inline', filename=filename)
+            else:
+                image_part.add_header('Content-Disposition', 'inline')
+            related.attach(image_part)
+
+        if attachments:
+            # multipart/mixed wrapping the related tree plus the file attachments.
+            msg = MIMEMultipart('mixed')
+            msg['Date'] = formatdate(localtime=True)
+            msg['Message-ID'] = make_msgid(domain=self._get_domain())
+            if 'MIME-Version' not in msg:
+                msg['MIME-Version'] = '1.0'
+            msg['Subject'] = self._encode_header(subject)
+            msg['From'] = from_header
+            msg['To'] = destination
+            msg.attach(related)
+
+            for attachment in attachments:
+                filename = attachment.get('filename', 'attachment.txt')
+                attach_content = attachment.get('content', '')
+                attach_content_type = attachment.get('content_type', 'text/plain')
+                encoding = attachment.get('encoding', 'utf-8')
+
+                if encoding == 'base64':
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(base64.b64decode(attach_content))
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename= {filename}'
+                    )
+                    part.add_header('Content-Type', attach_content_type)
+                    msg.attach(part)
+                else:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(attach_content.encode('utf-8'))
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename= {filename}'
+                    )
+                    if attach_content_type:
+                        part.add_header('Content-Type', attach_content_type)
+                    msg.attach(part)
+            return msg
+
+        # No file attachments — the related tree is the top-level message. Promote
+        # its required RFC 5322 headers.
+        related['Date'] = formatdate(localtime=True)
+        related['Message-ID'] = make_msgid(domain=self._get_domain())
+        if 'MIME-Version' not in related:
+            related['MIME-Version'] = '1.0'
+        related['Subject'] = self._encode_header(subject)
+        related['From'] = from_header
+        related['To'] = destination
+        return related
+
     def _encode_header(self, value: str) -> str:
         """
         Encode header value according to RFC 2047 if it contains non-ASCII characters.

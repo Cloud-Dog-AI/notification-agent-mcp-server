@@ -790,6 +790,19 @@ class LLMFormatter:
                 )
                 formatted_text = original_content_text
 
+        # Collapse guard: if the LLM formatting collapsed the content to near-nothing (e.g. a refusal/
+        # meta-comment such as "This content does not start with a greeting") and NO summary was
+        # requested, restore the original content. Applies regardless of max_length; only ever
+        # RESTORES content (never strips), so it is safe. Fixes empty/stripped rich-content emails.
+        if (not summary_result) and original_content_length > 500:
+            _collapse_len = len(formatted_text.strip()) if formatted_text else 0
+            if _collapse_len < min(120, int(original_content_length * 0.15)):
+                logger.warning(
+                    f"[FORMAT COLLAPSE GUARD] Formatted output collapsed "
+                    f"(len={_collapse_len} vs original_len={original_content_length}); restoring original content."
+                )
+                formatted_text = original_content_text
+
         # 11. Translate if needed (ALWAYS translate if target language is not English)
         if variables:
             pass

@@ -47,6 +47,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, File
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.requests import HTTPConnection
+from starlette.datastructures import MutableHeaders
+from itsdangerous.exc import BadSignature
+from base64 import b64decode, b64encode
 from httpx import (
     AsyncClient as SharedAsyncHTTPClient,
     HTTPError,
@@ -434,7 +438,7 @@ async def _startup(app):
     _web_proxy = WebApiProxy.from_config(config)
 
     global _shared_http_client
-    proxy_timeout = float(config.get("web_server.proxy_timeout") or 60.0)
+    proxy_timeout = float(config.get("web_server.proxy_timeout_seconds") or config.get("web_server.proxy_timeout") or 60.0)  # W28P-2403: defaults.yaml key is proxy_timeout_seconds
     _shared_http_client = create_http_client(
         base_url=api_base_url,
         api_key=api_key,
@@ -617,6 +621,13 @@ def _is_client_disconnect(exc: BaseException) -> bool:
         return True
     if "ClientDisconnect" in str(exc):
         return True
+    # Starlette's BaseHTTPMiddleware converts a downstream receive-stream
+    # EndOfStream with no application exception into this RuntimeError.  That
+    # is the normal shape produced when a browser cancels an in-flight SPA
+    # request during navigation.  Treat only Starlette's exact sentinel as a
+    # disconnect so genuine RuntimeErrors still propagate as server failures.
+    if isinstance(exc, RuntimeError) and str(exc) == "No response returned.":
+        return True
     # Check ExceptionGroup sub-exceptions
     for sub in getattr(exc, 'exceptions', []):
         if _is_client_disconnect(sub):
@@ -671,7 +682,7 @@ async def spa_asset_middleware(request: Request, call_next):
     if path.startswith("/ui/"):
         suffix = path[3:] or "/"
         target = suffix if suffix.startswith("/") else f"/{suffix}"
-        if target != "/login" and not request.session.get("user"):
+        if not request.session.get("user"):
             return RedirectResponse(url="/login", status_code=307)
         return _redirect_with_query(request, _protected_webui_alias_redirects.get(target, target))
 
@@ -682,6 +693,9 @@ async def spa_asset_middleware(request: Request, call_next):
 
     if path == "/runtime-config.js":
         return await call_next(request)
+
+    if path == "/developer/api-docs":
+        return _ui_index_response()
 
     if _is_ui_passthrough_path(path):
         return await call_next(request)
@@ -745,11 +759,86 @@ async def flat_role_write_gate(request: Request, call_next):
     return await call_next(request)
 
 
+class _ConditionalSessionMiddleware(SessionMiddleware):
+    """SessionMiddleware that writes the session cookie only when the session
+    actually changed during the request.
+
+    Stock Starlette re-signs and re-sets the cookie on EVERY response whose
+    session is non-empty. The notification dashboard polls many authenticated
+    endpoints continuously, so each poll response re-issued the signed session
+    cookie — racing with logout and re-authenticating the browser right after
+    sign-out (PS-PREPROD-DEPLOY-SMOKE PDS-013: a protected route rendered the
+    authenticated shell after logout). Issuing the cookie only on change makes
+    read-only requests leave it untouched, so a logout's session clear is
+    terminal even against in-flight poll responses. Trade-off: no sliding-expiry
+    refresh (the session expires max_age after login, not after last activity).
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        connection = HTTPConnection(scope)
+        initial_session_was_empty = True
+        if self.session_cookie in connection.cookies:
+            data = connection.cookies[self.session_cookie].encode("utf-8")
+            try:
+                data = self.signer.unsign(data, max_age=self.max_age)
+                scope["session"] = json.loads(b64decode(data))
+                initial_session_was_empty = False
+            except BadSignature:
+                scope["session"] = {}
+        else:
+            scope["session"] = {}
+        initial_session = dict(scope["session"])
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                changed = scope["session"] != initial_session
+                if scope["session"] and changed:
+                    body = b64encode(json.dumps(scope["session"]).encode("utf-8"))
+                    body = self.signer.sign(body)
+                    headers = MutableHeaders(scope=message)
+                    header_value = "{session_cookie}={data}; path={path}; {max_age}{security_flags}".format(
+                        session_cookie=self.session_cookie,
+                        data=body.decode("utf-8"),
+                        path=self.path,
+                        max_age=f"Max-Age={self.max_age}; " if self.max_age else "",
+                        security_flags=self.security_flags,
+                    )
+                    headers.append("Set-Cookie", header_value)
+                elif not scope["session"] and not initial_session_was_empty:
+                    headers = MutableHeaders(scope=message)
+                    header_value = "{session_cookie}={data}; path={path}; {expires}{security_flags}".format(
+                        session_cookie=self.session_cookie,
+                        data="null",
+                        path=self.path,
+                        expires="expires=Thu, 01 Jan 1970 00:00:00 GMT; ",
+                        security_flags=self.security_flags,
+                    )
+                    headers.append("Set-Cookie", header_value)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except BaseException as exc:
+            # This is the outermost Web application layer.  BaseHTTPMiddleware
+            # can synthesize Starlette's exact "No response returned." sentinel
+            # only after an inner disconnect guard has already completed, so the
+            # session layer must catch it here before the platform error handler
+            # records a false HTTP 500/unhandled exception.
+            if _is_client_disconnect(exc):
+                await Response(status_code=499)(scope, receive, send)
+                return
+            raise
+
+
 # Starlette runs the last registered middleware first. The function-style SPA
 # middleware above reads request.session, so SessionMiddleware must be registered
 # after it to be the outer layer and populate the scope before dispatch.
 app.add_middleware(
-    SessionMiddleware,
+    _ConditionalSessionMiddleware,
     secret_key=_session_secret,
     max_age=_session_max_age,
 )

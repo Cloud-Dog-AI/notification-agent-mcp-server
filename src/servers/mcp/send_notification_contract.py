@@ -9,6 +9,8 @@ from __future__ import annotations
 import inspect
 from typing import Any, Awaitable, Callable
 
+from ...core.inline_images import normalise_inline_images
+
 SEND_NOTIFICATION_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -45,6 +47,52 @@ SEND_NOTIFICATION_INPUT_SCHEMA: dict[str, Any] = {
                     "metadata": {"type": "object", "description": "Optional content metadata"},
                 },
                 "required": ["type", "body"],
+            },
+        },
+        "inline_images": {
+            "type": "array",
+            "description": (
+                "Optional inline (CID) images embedded in an HTML email body. Each "
+                "image is referenced from the HTML as <img src=\"cid:NAME\"> where "
+                "NAME matches content_id (case-sensitive). Images are attached via "
+                "multipart/related so they render inline in Gmail/Outlook/Apple Mail "
+                "(unlike data: URIs, which Gmail strips). Absence leaves email "
+                "assembly unchanged."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "content_id": {
+                        "type": "string",
+                        "description": "CID referenced by the HTML as cid:<content_id> (any surrounding <> are stripped)",
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "Image MIME type, e.g. image/png or image/jpeg",
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "Base64-encoded image bytes",
+                    },
+                    "storage_path": {
+                        "type": "string",
+                        "description": "cloud_dog_storage path for server-side image resolution",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "HTTP(S) or file URI fetched server-side via cloud_dog_storage.fetch_uri",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional filename used for the inline Content-Disposition",
+                    },
+                },
+                "required": ["content_id"],
+                "oneOf": [
+                    {"required": ["data"]},
+                    {"required": ["storage_path"]},
+                    {"required": ["url"]},
+                ],
             },
         },
         "audience_type": {"type": "string", "description": "Audience mode, usually personalised"},
@@ -144,6 +192,18 @@ def _coerce_destination(dest: Any) -> dict[str, Any]:
     return result
 
 
+def _coerce_inline_images(value: Any) -> list[dict[str, Any]]:
+    """Normalise the optional top-level inline_images array.
+
+    Each item must carry a non-empty ``content_id`` (the cid:NAME the HTML body
+    references) and exactly one of ``data``, ``storage_path``, or ``url``.
+    ``content_type`` and ``filename`` are kept when present. Malformed entries
+    raise ``ValueError`` so mixed inline/reference payloads are rejected before
+    they cross into delivery.
+    """
+    return normalise_inline_images(value)
+
+
 def build_send_notification_api_payload(arguments: dict[str, Any]) -> dict[str, Any]:
     """Normalise MCP arguments into the REST API message-create payload."""
     content = arguments.get("content")
@@ -157,6 +217,15 @@ def build_send_notification_api_payload(arguments: dict[str, Any]) -> dict[str, 
     destinations = arguments.get("destinations") or []
     if not isinstance(destinations, list):
         destinations = [destinations]
+
+    # Inline (CID) images: thread the optional top-level array onto the first
+    # content block so it survives in the message's content_json and reaches the
+    # delivery worker / SMTP adapter. Absence preserves current behaviour exactly.
+    inline_images = _coerce_inline_images(arguments.get("inline_images"))
+    if inline_images and content_blocks:
+        first_block = content_blocks[0]
+        if isinstance(first_block, dict) and not first_block.get("inline_images"):
+            first_block["inline_images"] = inline_images
 
     payload: dict[str, Any] = {
         "destinations": [_coerce_destination(dest) for dest in destinations],
@@ -305,11 +374,14 @@ async def execute_send_notification(
     resolve_duplicate: ResolveDuplicate,
 ) -> dict[str, Any]:
     """Execute send_notification and return a complete MCP tool-call payload."""
-    api_payload = build_send_notification_api_payload(arguments)
-    requested_count = len(api_payload.get("destinations") or [])
-    idempotency_key = str(api_payload.get("idempotency_key") or "")
+    api_payload: dict[str, Any] = {}
+    requested_count = 0
+    idempotency_key = ""
 
     try:
+        api_payload = build_send_notification_api_payload(arguments)
+        requested_count = len(api_payload.get("destinations") or [])
+        idempotency_key = str(api_payload.get("idempotency_key") or "")
         api_result = await _maybe_await(post_message(api_payload))
         raw_message_id = api_result.get("message_id") or api_result.get("id")
         message_id = int(raw_message_id)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "notification-agent-mcp-server"
-version = "0.1.1RC1"
+version = "0.1.5"
 description = "Cloud-Dog notification backend with REST, MCP, A2A, and web admin interfaces"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,7 +21,7 @@ classifiers = [
 dependencies = [
   "fastapi==0.111.0",
   "uvicorn[standard]==0.31.1",
-  "python-multipart==0.0.20",
+  "python-multipart>=0.0.30",
   "websockets==12.0",
   "jinja2==3.1.2",
   "itsdangerous==2.1.2",
@@ -38,15 +38,15 @@ dependencies = [
   "python-dotenv==1.0.0",
   "pydantic>=2.7.4",
   "pydantic-settings>=2.1.0",
-  "cloud_dog_config>=0.3.1",
-  "cloud_dog_logging>=0.3.3",
+  "cloud_dog_config==0.3.4",
+  "cloud_dog_logging>=0.4.1",
   "cloud_dog_api_kit==0.13.0",
-  "cloud_dog_idam>=0.5.2,<0.6",
-  "cloud_dog_jobs==0.4.1",
-  "cloud_dog_llm==0.3.0",
-  "cloud_dog_cache>=0.1.1",
-  "cloud_dog_storage>=0.1.4",
-  "cloud_dog_db>=0.1.0",
+  "cloud_dog_idam==0.5.3",
+  "cloud_dog_jobs==0.4.2",
+  "cloud_dog_llm==0.4.0",
+  "cloud_dog_cache>=0.2.0",
+  "cloud_dog_storage==0.1.8",
+  "cloud_dog_db>=0.3.2",
   "hvac>=2.4.0",
   "passlib[bcrypt]==1.7.4",
   "python-jose[cryptography]==3.3.0",

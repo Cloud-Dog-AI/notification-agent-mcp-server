@@ -49,9 +49,62 @@ from ..adapters import get_adapter_registry
 from ..adapters.base import ErrorClass
 from ..utils.logger import get_logger, get_context_logger
 from ..config import get_config
+from .inline_images import resolve_inline_image_references
 from .jobs.runtime import get_jobs_runtime
+from concurrent.futures import ThreadPoolExecutor
+
+# W28P-2403: dedicated bounded executor for long delivery-worker background work (LLM
+# format/translate/invoke and PDF generation). These 150-300s tasks previously ran on the
+# default ThreadPoolExecutor (offloaded with a None executor), which the API/web request
+# path also uses for DB queries; under delivery load the default pool saturated and starved
+# the /webapi/proxy/* DB queries -> web-proxy read timeout -> intermittent 502. Isolating
+# them here keeps the request path responsive (AGENT-LESSONS §2.26).
+_delivery_bg_executor: Optional[ThreadPoolExecutor] = None
+
+
+def _get_delivery_bg_executor() -> ThreadPoolExecutor:
+    global _delivery_bg_executor
+    if _delivery_bg_executor is None:
+        try:
+            mw = int(get_config().get("delivery.bg_executor_max_workers") or 8)
+        except Exception:
+            mw = 8
+        _delivery_bg_executor = ThreadPoolExecutor(
+            max_workers=max(1, mw), thread_name_prefix="notif-delivery-bg"
+        )
+    return _delivery_bg_executor
+
 
 logger = get_logger(__name__)
+
+
+def _pdf_filename_from_subject(message, fallback_id=None):
+    """Derive a meaningful PDF attachment filename from the message subject
+    (e.g. 'Operational-Team-Placement-Assessment-Western-Europe-2026-06-30.pdf').
+    Falls back to notification_<id>.pdf when no usable subject is present."""
+    subject = ""
+    try:
+        if isinstance(message, dict):
+            subject = (message.get("subject") or "").strip()
+            if not subject and message.get("variables_json"):
+                mv = message["variables_json"]
+                mv = json.loads(mv) if isinstance(mv, str) else mv
+                if isinstance(mv, dict):
+                    subject = (mv.get("subject") or "").strip()
+            if not subject and message.get("content_json"):
+                cj = message["content_json"]
+                cj = json.loads(cj) if isinstance(cj, str) else cj
+                if isinstance(cj, list) and cj and isinstance(cj[0], dict):
+                    subject = (cj[0].get("subject") or "").strip()
+    except Exception:
+        subject = ""
+    base = re.sub(r"[^A-Za-z0-9\s-]", "", subject)      # keep ascii word chars, spaces, hyphens
+    base = re.sub(r"[\s_]+", "-", base).strip("-")[:90]  # spaces -> hyphens, cap length
+    if not base:
+        mid = fallback_id or (message.get("id") if isinstance(message, dict) else None) or "message"
+        base = f"notification_{mid}"
+    return base + ".pdf"
+
 
 SLACK_SUMMARY_LINK_MIN_PREVIEW_CHARS = 900
 
@@ -821,6 +874,95 @@ class DeliveryProcessorLoop:
             return None
         return defer_until
 
+    def _epe_group_name(self, group_id) -> str:
+        """Resolve an IDAM group id to its name for the EPE key prefix; fall back to the id."""
+        try:
+            if group_id and getattr(self, "group_manager", None):
+                g = self.group_manager.get_group(group_id)
+                if g and (g.get("name") if isinstance(g, dict) else None):
+                    return str(g["name"])
+        except Exception:  # noqa: BLE001
+            pass
+        return str(group_id or "default")
+
+    async def _maybe_publish_external_assets(self, formatted_payload, destination_preferences,
+                                             destination, channel, group_id, message):
+        """EPE (docs/requirements/EXTERNAL-PUBLICATION-ENDPOINT.md): for an EXTERNAL-routed
+        recipient, publish the delivery's inline (CID) assets to the public endpoint and rewrite
+        the body internal->external so a remote client (gmail/slack) sees working links.
+
+        Feature-flagged by ``publication.enabled`` (default OFF -> exact no-op, so current
+        deliveries are byte-for-byte unchanged). Fully defensive: any error returns the payload
+        unchanged (never blocks a delivery). Enforces the isolation invariant via the router:
+        internal-routed recipients are never published/rewritten here.
+        """
+        try:
+            if not self.config.get("publication.enabled"):
+                return formatted_payload
+            if not isinstance(formatted_payload, dict):
+                return formatted_payload
+            from src.core.publication.router import PublicationPolicy, resolve_publication_mode, EXTERNAL
+            try:
+                ch_cfg = json.loads(channel.get("config_json") or "{}") if isinstance(channel, dict) else {}
+            except Exception:  # noqa: BLE001
+                ch_cfg = {}
+            policy = PublicationPolicy.from_config(ch_cfg.get("publication"), feature_enabled=True)
+            override = destination_preferences.get("publication_mode") if isinstance(destination_preferences, dict) else None
+            decision = resolve_publication_mode(policy, str(destination or ""), override)
+            _masked = re.sub(r"(^.).*(@.*$)", r"\1***\2", str(destination or "")) if "@" in str(destination or "") else "***"
+            logger.info("[EPE] route %s -> mode=%s rule=%s", _masked, decision.mode, decision.rule_id)
+            if decision.mode != EXTERNAL:
+                return formatted_payload
+            inline_images = formatted_payload.get("inline_images") or []
+            body = formatted_payload.get("body")
+            if not inline_images and not (isinstance(body, str) and "cid:" in body):
+                return formatted_payload
+            pub_cfg = {
+                "endpoint": self.config.get("publication.s3.endpoint"),
+                "bucket": self.config.get("publication.s3.bucket"),
+                "access_key": self.config.get("publication.s3.access_key"),
+                "secret_key": self.config.get("publication.s3.secret_key"),
+                "region": self.config.get("publication.s3.region") or "us-east-1",
+                "public_base_url": self.config.get("publication.public_base_url"),
+            }
+            from src.core.publication.publisher import AssetPublisher
+            from src.core.publication.rewrite import rewrite_html
+            group_name = self._epe_group_name(group_id)
+            guid = str((message or {}).get("guid") or (message or {}).get("id") or "msg")
+            publisher = AssetPublisher(pub_cfg)
+            cid_map, _url_rep = await publisher.publish(group=group_name, message_guid=guid,
+                                                        inline_images=inline_images)
+            new_payload = dict(formatted_payload)
+            if isinstance(body, str):
+                new_payload["body"] = rewrite_html(body, cid_url_map=cid_map)
+            new_payload["inline_images"] = []  # assets are now external <img>; no CID parts
+            logger.info("[EPE] external delivery to %s: published %d assets under %s/%s, rewrote body",
+                        _masked, len(cid_map), group_name, guid)
+            return new_payload
+        except Exception as e:  # noqa: BLE001 — never block a delivery on publication error
+            logger.warning("[EPE] external publication failed (%s); delivering unchanged", e)
+            return formatted_payload
+
+    def _record_adapter_failure(self, delivery_id: int, send_result, ctx_logger) -> bool:
+        """Record one failed adapter result and stop normal delivery processing."""
+        if send_result.success:
+            return False
+        is_transient = (
+            send_result.error_class == ErrorClass.TRANSIENT
+            if send_result.error_class
+            else True
+        )
+        self.job_manager.handle_delivery_failure(
+            delivery_id=delivery_id,
+            error=send_result.error or "Send failed",
+            is_transient=is_transient,
+        )
+        ctx_logger.warning(
+            "Delivery send failed",
+            extra={"error": send_result.error or "Send failed", "is_transient": is_transient},
+        )
+        return True
+
     async def _process_delivery(self, delivery: Dict[str, Any], ctx_logger=None):
         """Process a single delivery
 
@@ -1155,7 +1297,7 @@ class DeliveryProcessorLoop:
                 try:
                     loop = asyncio.get_event_loop()
                     return await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: self.formatter._translate(source_text, target_lang)),
+                        loop.run_in_executor(_get_delivery_bg_executor(), lambda: self.formatter._translate(source_text, target_lang)),
                         timeout=current_timeout,
                     )
                 except asyncio.TimeoutError as timeout_err:
@@ -1661,8 +1803,7 @@ class DeliveryProcessorLoop:
                 try:
                     loop = asyncio.get_event_loop()
                     format_result = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            None,
+                        loop.run_in_executor(_get_delivery_bg_executor(),
                             lambda: self.formatter.format_message(
                                 content=content,
                                 channel_type=formatter_channel_type,
@@ -2131,8 +2272,7 @@ class DeliveryProcessorLoop:
                                             f"{combined}\n"
                                         )
                                         strict_retry = await asyncio.wait_for(
-                                            loop.run_in_executor(
-                                                None,
+                                            loop.run_in_executor(_get_delivery_bg_executor(),
                                                 lambda: self.formatter.llm_manager.invoke(
                                                     strict_prompt,
                                                     timeout=budget_timeout(float(llm_timeout)),
@@ -2221,8 +2361,7 @@ class DeliveryProcessorLoop:
                                             f"{combined}\n"
                                         )
                                         translated_text = await asyncio.wait_for(
-                                            loop.run_in_executor(
-                                                None,
+                                            loop.run_in_executor(_get_delivery_bg_executor(),
                                                 lambda: self.formatter.llm_manager.invoke(strict_prompt, timeout=budget_timeout(llm_timeout)),
                                             ),
                                             timeout=budget_timeout(float(llm_timeout)),
@@ -3217,13 +3356,19 @@ class DeliveryProcessorLoop:
                                 except Exception:
                                     pass
 
+                            # Inline (CID) images so the hosted page can rewrite
+                            # <img src="cid:NAME"> refs to self-contained data: URIs
+                            # (browsers cannot resolve cid: references).
+                            page_inline_images = self._extract_inline_images_from_message(message)
+
                             # Generate HTML page
                             html_content = self.html_page_generator.generate_page(
                                 content=formatted_content,
                                 user_name=user_name,
                                 message_title=message_title,
                                 processed_media=processed_media,
-                                language=user_language or pdf_language if 'pdf_language' in locals() else None
+                                language=user_language or pdf_language if 'pdf_language' in locals() else None,
+                                inline_images=page_inline_images,
                             )
 
                             # Store HTML page
@@ -3546,13 +3691,19 @@ class DeliveryProcessorLoop:
                 pdf_timeout = self.config.get('pdf.generation_timeout', 180)
                 logger.debug(f"Starting PDF generation with {pdf_timeout}s timeout")
 
+                # Inline (CID) images (charts/maps) so the WeasyPrint PDF embeds them instead of
+                # dropping unresolved cid: references. Defensive: fall back to None on any error.
+                try:
+                    _pdf_inline_images = self._extract_inline_images_from_message(message)
+                except Exception:
+                    _pdf_inline_images = None
+
                 try:
                     # WeasyPrint/font subsetting is materially heavier than normal delivery work
                     # and has proven unstable when multiple PDF builds run concurrently.
                     async with self._pdf_generation_semaphore:
                         loop = asyncio.get_event_loop()
-                        pdf_future = loop.run_in_executor(
-                            None,
+                        pdf_future = loop.run_in_executor(_get_delivery_bg_executor(),
                             self.pdf_helper.generate_and_prepare_pdf,
                             pdf_content_for_generation,  # Use the translated content from DB
                             user_id,
@@ -3562,7 +3713,9 @@ class DeliveryProcessorLoop:
                             pdf_language,
                             pdf_content_style,
                             destination_pdf_preference,
-                            processed_media
+                            processed_media,
+                            None,  # title (unchanged default)
+                            _pdf_inline_images  # inline CID images to embed in the PDF
                         )
 
                         pdf_info = await asyncio.wait_for(pdf_future, timeout=pdf_timeout)
@@ -3829,7 +3982,7 @@ class DeliveryProcessorLoop:
                         formatted_payload[0]['attachments'].append({
                             "type": "pdf",
                             "url": pdf_link,
-                            "filename": f"notification_{message_id if 'message_id' in locals() else 'message'}.pdf"
+                            "filename": _pdf_filename_from_subject(message)
                         })
                         logger.debug(f"Added PDF attachment to payload: {formatted_payload[0]['attachments']}")
                     else:
@@ -3840,7 +3993,7 @@ class DeliveryProcessorLoop:
                             "attachments": [{
                                 "type": "pdf",
                                 "url": pdf_link,
-                                "filename": f"notification_{message_id if 'message_id' in locals() else 'message'}.pdf"
+                                "filename": _pdf_filename_from_subject(message)
                             }]
                         })
                         logger.debug("Added PDF as new content block with attachment")
@@ -4811,8 +4964,7 @@ class DeliveryProcessorLoop:
                                         f"{body_text}\n"
                                     )
                                     strict_retry = await asyncio.wait_for(
-                                        loop.run_in_executor(
-                                            None,
+                                        loop.run_in_executor(_get_delivery_bg_executor(),
                                             lambda: self.formatter.llm_manager.invoke(
                                                 strict_prompt,
                                                 timeout=translation_timeout,
@@ -5784,6 +5936,11 @@ class DeliveryProcessorLoop:
             personalised_payload=json.dumps(formatted_payload) if isinstance(formatted_payload, (dict, list)) else formatted_payload,
         )
 
+        # EPE: for an external-routed recipient, publish inline assets to the public endpoint and
+        # rewrite the body internal->external (feature-flagged; no-op when publication disabled).
+        formatted_payload = await self._maybe_publish_external_assets(
+            formatted_payload, destination_preferences, actual_destination, channel, group_id, message)
+
         delivery_dict = {
             'destination': actual_destination,
             'personalised_payload': json.dumps(formatted_payload) if isinstance(formatted_payload, (dict, list)) else formatted_payload,
@@ -5796,28 +5953,22 @@ class DeliveryProcessorLoop:
         # Send via adapter
         send_result = await adapter.send(delivery_dict)
 
-        # Step 5: Handle send result
-        if send_result.success:
-            self.job_manager.mark_delivery_sent(
+        # Step 5: Handle send result exactly once.  A handled adapter failure
+        # returns here so the outer worker does not reclassify it as transient.
+        if self._record_adapter_failure(delivery_id, send_result, ctx_logger):
+            return
+
+        self.job_manager.mark_delivery_sent(
+            delivery_id=delivery_id,
+            provider_tracking_id=send_result.tracking_id,
+        )
+        if channel_type == "smtp" and send_result.tracking_id:
+            self._schedule_smtp_confirmation(
+                adapter=adapter,
+                tracking_id=send_result.tracking_id,
                 delivery_id=delivery_id,
-                provider_tracking_id=send_result.tracking_id,
+                actual_destination=actual_destination,
             )
-            if channel_type == "smtp" and send_result.tracking_id:
-                self._schedule_smtp_confirmation(
-                    adapter=adapter,
-                    tracking_id=send_result.tracking_id,
-                    delivery_id=delivery_id,
-                    actual_destination=actual_destination,
-                )
-        else:
-            # Handle failure
-            is_transient = send_result.error_class == ErrorClass.TRANSIENT if send_result.error_class else True
-            self.job_manager.handle_delivery_failure(
-                delivery_id=delivery_id,
-                error=send_result.error or "Send failed",
-                is_transient=is_transient,
-            )
-            raise Exception(f"Send failed: {send_result.error}")
 
         ctx_logger.info("Delivery sent successfully")
 
@@ -5920,6 +6071,12 @@ class DeliveryProcessorLoop:
 
     def _format_content_for_email(self, formatted_content: List[Dict[str, Any]], message: Dict[str, Any], message_guid: Optional[str] = None, pdf_info: Optional[Dict[str, Any]] = None, html_page_info: Optional[Dict[str, Any]] = None, processed_media: Optional[List[Dict[str, Any]]] = None, destination_preferences: Optional[Dict[str, Any]] = None, prompt_text: Optional[str] = None) -> Dict[str, Any]:
         """Convert formatted content blocks to email format with optional attachment, HTML page link, and embedded images (T32: Phase 8, 9)"""
+        # Inline (CID) images: carried verbatim from the original request content
+        # blocks (content_json) so the SMTP adapter can embed them via
+        # multipart/related and the HTML body's <img src="cid:NAME"> tags render
+        # inline in Gmail/Outlook/Apple Mail. Absence preserves current behaviour.
+        inline_images = self._extract_inline_images_from_message(message)
+
         # Extract subject from message, variables, or formatted content
         subject = None
         body = ""
@@ -5950,7 +6107,7 @@ class DeliveryProcessorLoop:
                 message_identifier = message.get("id") or message.get("message_id") or "message"
                 pdf_attachment = self.pdf_helper.prepare_pdf_attachment(
                     pdf_info,
-                    filename=f"notification_{message_identifier}.pdf",
+                    filename=_pdf_filename_from_subject(message, message_identifier),
                 )
                 if pdf_attachment:
                     # Convert bytes to base64 string for email attachment
@@ -6172,6 +6329,10 @@ class DeliveryProcessorLoop:
                     content_type="html" if "html" in payload_content_type else "text",
                     prompt_text=prompt_text,
                 )
+            # Carry inline (CID) images through to the SMTP adapter. Only add the
+            # key when present so non-image deliveries are byte-for-byte unchanged.
+            if inline_images and not payload.get("inline_images"):
+                payload["inline_images"] = inline_images
             return payload
 
         # If no body found, use original content
@@ -6401,12 +6562,53 @@ class DeliveryProcessorLoop:
             if "<html" not in body_lower and "<!doctype" not in body_lower:
                 body = f"<html><body>{body_stripped}</body></html>" if body_stripped else "<html><body></body></html>"
 
-        return {
+        email_payload = {
             'subject': subject,
             'body': body,
             'content_type': content_type,
             'attachments': attachments,
         }
+        # Carry inline (CID) images through to the SMTP adapter, which embeds them
+        # via multipart/related. Only add the key when present so deliveries
+        # without inline images keep their existing payload shape.
+        if inline_images:
+            email_payload['inline_images'] = inline_images
+        return email_payload
+
+    def _extract_inline_images_from_message(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Collect inline (CID) image descriptors supplied on the request.
+
+        Callers attach a top-level ``inline_images`` array on the send_notification
+        request; the MCP contract threads it onto the message content blocks so it
+        survives in ``content_json``. Each descriptor is a dict like::
+
+            {"content_id": "map1", "content_type": "image/png",
+             "data": "<base64>", "filename": "map1.png"}
+
+        Returns an empty list when none are present (current behaviour).
+        """
+        if not isinstance(message, dict):
+            return []
+        collected: List[Dict[str, Any]] = []
+        try:
+            content_json = message.get('content_json')
+            blocks = json.loads(content_json) if isinstance(content_json, str) else content_json
+        except Exception:
+            blocks = None
+        if isinstance(blocks, list):
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_images = block.get('inline_images')
+                if isinstance(block_images, list):
+                    for image in block_images:
+                        if (
+                            isinstance(image, dict)
+                            and image.get('content_id')
+                            and (image.get('data') or image.get('storage_path') or image.get('url'))
+                        ):
+                            collected.append(image)
+        return resolve_inline_image_references(collected, config=self.config)
 
     def _format_content_for_slack(
         self,

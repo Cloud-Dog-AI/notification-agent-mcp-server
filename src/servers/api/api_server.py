@@ -82,6 +82,64 @@ def _normalise_base_path(value: Any, *, default: str) -> str:
     return "" if text == "/" else text
 
 
+def _git_head_commit() -> str:
+    """Best-effort git HEAD for dev/source runs (empty string if unavailable).
+
+    Mirrors the deployed chart-mcp / file-mcp reference so a local/source run
+    still populates the WebUI About page when no container build-identity ENV is
+    present. W28E-1863 fix-wave-d (WSC-014).
+    """
+    try:
+        import subprocess
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[3]
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:  # noqa: BLE001 - build identity must never crash a request
+        return ""
+    return ""
+
+
+def _build_identity(cfg=None) -> Dict[str, str]:
+    """Return build/deploy identity for WSC-014 / PS-30 UI-R7.3.
+
+    Source of truth is the container build: ``docker-build.sh`` stamps the image
+    OCI ``org.opencontainers.image.revision`` label AND injects the matching
+    runtime ENV, which ``cloud_dog_config`` surfaces as ``build.source_commit`` /
+    ``build.source_branch`` / ``build.build_date`` / ``build.container_digest``
+    (env keys ``CLOUD_DOG__BUILD__SOURCE_COMMIT`` … routed through cloud_dog_config,
+    NOT direct os.environ — RULES §1.4.1). For a dev/source run (no container ENV)
+    ``source_commit`` falls back to the working-tree git HEAD so the About page is
+    still populated locally. Modelled on the deployed chart-mcp reference. W28E-1863
+    fix-wave-d.
+    """
+    cfg = cfg or get_config(force_reload=True, unresolved_policy="empty")
+    commit = str(cfg.get("build.source_commit", "") or "").strip()
+    if not commit or commit == "unknown":
+        commit = _git_head_commit()
+    branch = str(cfg.get("build.source_branch", "") or "").strip()
+    if branch == "unknown":
+        branch = ""
+    build_date = str(cfg.get("build.build_date", "") or "").strip()
+    digest = str(cfg.get("build.container_digest", "") or "").strip()
+    env_name = str(cfg.get("app.environment", "") or cfg.get("environment", "") or "").strip()
+    return {
+        "source_commit": commit,
+        "source_branch": branch,
+        "build_date": build_date,
+        "container_digest": digest,
+        "environment": env_name,
+    }
+
+
 _api_base_path = _normalise_base_path(
     _temp_cfg.get("api_server.base_path"),
     default="/api/v1",
@@ -350,9 +408,14 @@ _auth_skip_paths = {
     "/docs",
     "/openapi.json",
     "/",
+    # W28E-1863 fix-wave-d (WSC-014): the About-page build-identity /version must be
+    # reachable unauthenticated (like /health) so the status bar / About page can
+    # render before login, matching the shared api-kit /version convention.
+    "/version",
+    "/api/v1/version",
 }
 if _api_base_path:
-    for suffix in ("/health", "/ready", "/live"):
+    for suffix in ("/health", "/ready", "/live", "/version"):
         _auth_skip_paths.add(f"{_api_base_path}{suffix}")
 idam_runtime.install_auth_middleware(
     app,
@@ -918,6 +981,11 @@ def _encode_job(job: Any) -> dict[str, Any]:
     encoded["request_source"] = encoded.get("request_source") or payload.get("request_source") or "legacy"
     encoded["request_auth_method"] = encoded.get("request_auth_method") or payload.get("request_auth_method") or "not_recorded"
     encoded["request_user_agent"] = encoded.get("request_user_agent") or payload.get("request_user_agent") or "not_recorded"
+    # W28E-1879 (NA-J-02): surface the NIST AU-3 Client IP / source address on the
+    # Jobs record so the WebUI Jobs panel shows Client IP instead of a blank.
+    _client_ip = encoded.get("request_ip") or payload.get("request_ip") or "not_recorded"
+    encoded["client_ip"] = _client_ip
+    encoded["source_address"] = _client_ip
     progress = encoded.get("progress")
     if not isinstance(progress, dict) or not progress.get("stage"):
         status_name = encoded.get("status") or _job_status_name(job)
@@ -1057,6 +1125,19 @@ async def startup(_: Any) -> None:
     # Initialize repositories
     channel_repo = ChannelRepository(db)
 
+    # Belt-and-suspenders: guarantee the first-class `description` column exists
+    # before the reconcile INSERT runs, independent of migration-file ordering
+    # (idempotent additive ADD COLUMN; a duplicate-column error means it is
+    # already present). This never mutates reconcile behaviour.
+    try:
+        db.execute("ALTER TABLE channels ADD COLUMN description TEXT")
+        logger.info("Ensured channels.description column (added)")
+    except Exception as _desc_exc:  # pragma: no cover - depends on live schema
+        if not getattr(db, "_is_duplicate_error", None) or db._is_duplicate_error(_desc_exc):
+            logger.debug("channels.description column already present")
+        else:
+            logger.warning(f"channels.description ensure failed (non-blocking): {_desc_exc}")
+
     # Reconcile channels from active runtime config before adapter registration.
     # Source of truth is env/config, DB mirrors runtime state.
     _reconcile_channels_from_config(config, channel_repo, logger)
@@ -1145,12 +1226,32 @@ async def root():
 @app.get("/version")
 @app.get("/api/v1/version")
 async def api_version():
-    """Version endpoint for unified API surface checks."""
+    """Version endpoint for unified API surface checks.
+
+    W28E-1863 fix-wave-d (WSC-014 / PS-30 UI-R7.3): also surface the container
+    build's source commit + build date + deployment identity (config-routed via
+    ``_build_identity``, git-HEAD dev fallback) so the shared @cloud-dog/shell
+    AboutPage (which the FE feeds from this route) can render build provenance.
+    The FE fetches ``{API_BASE_URL}/version``; this route is served on the root
+    (API) app of the unified mount, so the web tier's SPA middleware never shadows
+    it.
+    """
+    _cfg = get_config(force_reload=True, unresolved_policy="empty")
+    _build = _build_identity(_cfg)
+    _version = str(_cfg.get("app.version", "0.1.0") or "0.1.0")
     return {
         "name": "Notification Agent MCP Server",
-        "version": "0.1.0",
+        "version": _version,
+        "appVersion": _version,
         "status": "running",
         "timestamp": datetime.now().isoformat(),
+        "source_commit": _build["source_commit"],
+        "source_branch": _build["source_branch"],
+        "build_date": _build["build_date"],
+        "container_digest": _build["container_digest"],
+        "environment": _build["environment"],
+        # legacy field name any VersionInfo consumer may already read
+        "commit": _build["source_commit"],
     }
 
 

@@ -191,12 +191,22 @@ class DatabaseManager:
                     def _set_sqlite_pragmas(dbapi_connection, _connection_record):
                         cursor = dbapi_connection.cursor()
                         try:
-                            cursor.execute("PRAGMA journal_mode=WAL")
                             cursor.execute("PRAGMA busy_timeout=60000")
                             cursor.execute("PRAGMA synchronous=NORMAL")
                         finally:
                             cursor.close()
                 with self.engine.connect() as conn:
+                    # ``journal_mode`` is database-wide, not a per-connection
+                    # setting.  Running it from the pool's ``connect`` event
+                    # made every new SQLite connection negotiate WAL again.
+                    # A cold WebUI fans out enough requests to grow the pool;
+                    # those concurrent mode changes then queued behind SQLite's
+                    # exclusive journal-mode gate for tens of seconds.  Set WAL
+                    # exactly once while this manager is initialising.  The
+                    # genuinely per-connection settings remain in the listener
+                    # above for every pooled connection.
+                    if self.engine.dialect.name.startswith("sqlite"):
+                        conn.exec_driver_sql("PRAGMA journal_mode=WAL")
                     conn.execute(text("SELECT 1"))
                 self.dialect = self.engine.dialect.name
                 return True
@@ -316,19 +326,26 @@ class DatabaseManager:
         Returns:
             Row as dictionary or None
         """
-        with self._lock:
-            if not self.engine:
-                if not self.connect():
-                    raise RuntimeError("Database not connected")
-            sql, mapped = self._prepare_query(query, params)
+        # SQLAlchemy's engine/pool owns connection thread-safety and SQLite WAL
+        # permits concurrent readers.  Holding the manager's process-wide RLock
+        # for the complete SELECT used to serialize every WebUI collection behind
+        # the slowest query (notably the 2 GB deliveries store), turning a handful
+        # of valid parallel page requests into 30-45 second "Failed to fetch"
+        # cascades.  Retain the lock only for one-time engine initialisation; write
+        # operations remain serialized by execute()/execute_many().
+        if not self.engine:
+            if not self.connect():
+                raise RuntimeError("Database not connected")
+        engine = self.engine
+        sql, mapped = self._prepare_query(query, params)
 
-            def _do():
-                with self.engine.connect() as conn:
-                    result = conn.execute(text(sql), mapped)
-                    row = result.mappings().first()
-                    return dict(row) if row else None
+        def _do():
+            with engine.connect() as conn:
+                result = conn.execute(text(sql), mapped)
+                row = result.mappings().first()
+                return dict(row) if row else None
 
-            return _run_with_lock_retry(_do)
+        return _run_with_lock_retry(_do)
     
     def fetchall(self, query: str, params: tuple = None) -> list:
         """Fetch all rows
@@ -340,19 +357,19 @@ class DatabaseManager:
         Returns:
             List of rows as dictionaries
         """
-        with self._lock:
-            if not self.engine:
-                if not self.connect():
-                    raise RuntimeError("Database not connected")
-            sql, mapped = self._prepare_query(query, params)
+        if not self.engine:
+            if not self.connect():
+                raise RuntimeError("Database not connected")
+        engine = self.engine
+        sql, mapped = self._prepare_query(query, params)
 
-            def _do():
-                with self.engine.connect() as conn:
-                    result = conn.execute(text(sql), mapped)
-                    rows = result.mappings().all()
-                    return [dict(row) for row in rows]
+        def _do():
+            with engine.connect() as conn:
+                result = conn.execute(text(sql), mapped)
+                rows = result.mappings().all()
+                return [dict(row) for row in rows]
 
-            return _run_with_lock_retry(_do)
+        return _run_with_lock_retry(_do)
     
     def initialize_schema(self):
         """Initialize database schema by running all migrations in order"""
@@ -399,7 +416,14 @@ class DatabaseManager:
             with self.engine.begin() as conn:
                 try:
                     conn.connection.executescript(migration_sql)
-                except SQLAlchemyError as exc:
+                # NOTE: conn.connection.executescript() is the raw sqlite3 DBAPI
+                # call, so an idempotent re-apply (e.g. ADD COLUMN on a column
+                # that already exists) raises a bare sqlite3.OperationalError,
+                # NOT a SQLAlchemyError. Catch broadly and defer to
+                # _is_duplicate_error so a single already-applied migration does
+                # not abort the whole ordered run (which would skip later,
+                # not-yet-applied migrations).
+                except Exception as exc:
                     if self._is_duplicate_error(exc):
                         self.logger.debug(f"⚠️  Migration {migration_file.name} already applied (skipping)")
                         return

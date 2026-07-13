@@ -29,12 +29,17 @@ Recent Changes (max 10):
 
 **************************************************
 """
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from ...utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Matches <img ... src="cid:NAME" ...> / src='cid:NAME' (case-insensitive on the
+# attribute, case-sensitive on NAME so it can be matched against content_id).
+_CID_IMG_SRC_RE = re.compile(r"""(src\s*=\s*)(['"])cid:([^'"]+)(['"])""", re.IGNORECASE)
 
 
 class HTMLPageGenerator:
@@ -54,10 +59,11 @@ class HTMLPageGenerator:
         processed_media: Optional[List[Dict[str, Any]]] = None,
         language: Optional[str] = None,
         stylesheet_url: Optional[str] = None,
+        inline_images: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Generate personalized HTML page with embedded media
-        
+
         Args:
             content: List of content blocks (text, markdown, html)
             user_name: User's name for personalization
@@ -65,10 +71,20 @@ class HTMLPageGenerator:
             processed_media: List of processed media dicts (from MediaProcessor)
             language: Language code for HTML lang attribute
             stylesheet_url: Optional URL to external stylesheet
-            
+            inline_images: Optional list of inline (CID) image descriptors, each like
+                ``{"content_id": "map1", "content_type": "image/png",
+                "data": "<base64>", "filename": "map1.png"}``. Any ``<img src="cid:NAME">``
+                reference in an HTML content block whose NAME matches a descriptor's
+                ``content_id`` is rewritten to a self-contained ``data:`` URI so the
+                image renders in a browser (the email body keeps the CID references).
+
         Returns:
             Complete HTML page as string
         """
+        # Build a content_id -> data: URI map once so the hosted page is fully
+        # self-contained. The email body still uses cid: references; only this
+        # browser-viewed page is rewritten.
+        cid_data_uris = self._build_cid_data_uri_map(inline_images)
         html_parts = []
         
         # HTML header
@@ -111,7 +127,9 @@ class HTMLPageGenerator:
             body = block.get("body", "")
             
             if block_type == "html":
-                html_parts.append(body)
+                # Rewrite any cid: image references to self-contained data: URIs so
+                # they render in the browser-viewed hosted page.
+                html_parts.append(self._rewrite_cid_images(body, cid_data_uris))
             elif block_type == "markdown":
                 # Convert markdown to HTML (simplified - would use markdown library in production)
                 html_parts.append(f'<div class="markdown-content">{self._markdown_to_html(body)}</div>')
@@ -121,12 +139,19 @@ class HTMLPageGenerator:
         
         html_parts.append("</div>")
         
-        # Media section
-        if processed_media:
+        # Media section. EXCLUDE inline (CID) images here: they are already embedded in the body
+        # above, and a bare ``cid:`` reference does not resolve in a standalone browser page (it
+        # rendered as a broken "Image (None)"). Only standalone media gets its own section.
+        renderable_media = [
+            m for m in (processed_media or [])
+            if not (m.get("type") == "image"
+                    and str(m.get("url") or m.get("original_uri") or "").startswith("cid:"))
+        ]
+        if renderable_media:
             html_parts.append('<div class="media-section">')
             html_parts.append("<h2>Media Files</h2>")
-            
-            for media in processed_media:
+
+            for media in renderable_media:
                 media_type = media.get("type")
                 url = media.get("url") or media.get("original_uri")
                 format = media.get("format", "")
@@ -138,7 +163,8 @@ class HTMLPageGenerator:
                 if media_type == "image":
                     # Embed image - support both data URIs and regular URLs
                     # Get alt_text from metadata or original block
-                    alt_text = metadata.get("alt") or media.get("alt_text") or f"Image ({format})"
+                    alt_text = (metadata.get("alt") or media.get("alt_text") or media.get("filename")
+                                or (f"Image ({format})" if format else "Image"))
                     width = metadata.get("width")
                     height = metadata.get("height")
                     width_attr = f' width="{width}"' if width else ""
@@ -196,7 +222,59 @@ class HTMLPageGenerator:
         html_content = "\n".join(html_parts)
         logger.debug(f"Generated HTML page: {len(html_content)} characters")
         return html_content
-    
+
+    @staticmethod
+    def _build_cid_data_uri_map(
+        inline_images: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, str]:
+        """Map each inline image's content_id to a ``data:`` URI.
+
+        Surrounding angle brackets on ``content_id`` (e.g. ``<map1>``) are stripped
+        and matching is case-sensitive. Descriptors missing an id or base64 ``data``
+        are skipped. Returns an empty dict when there are no usable images, so the
+        page rendering is unchanged for messages without inline images.
+        """
+        mapping: Dict[str, str] = {}
+        if not inline_images:
+            return mapping
+        for image in inline_images:
+            if not isinstance(image, dict):
+                continue
+            content_id = image.get("content_id")
+            data = image.get("data")
+            if not content_id or not data:
+                continue
+            # Strip surrounding <> from the content_id (CID headers use <NAME>).
+            cid = str(content_id).strip()
+            if cid.startswith("<") and cid.endswith(">"):
+                cid = cid[1:-1]
+            if not cid:
+                continue
+            content_type = image.get("content_type") or "image/png"
+            mapping[cid] = f"data:{content_type};base64,{data}"
+        return mapping
+
+    @staticmethod
+    def _rewrite_cid_images(html: str, cid_data_uris: Dict[str, str]) -> str:
+        """Replace ``src="cid:NAME"`` references with their ``data:`` URI.
+
+        Defensive and additive: when there are no inline images (empty map) or the
+        body has no ``cid:`` references, the body is returned unchanged. A ``cid:``
+        reference with no matching image is left untouched (never crashes).
+        """
+        if not html or not cid_data_uris:
+            return html
+
+        def _replace(match: "re.Match[str]") -> str:
+            prefix, open_quote, name, close_quote = match.groups()
+            data_uri = cid_data_uris.get(name)
+            if data_uri is None:
+                # No matching inline image -> leave the reference as-is.
+                return match.group(0)
+            return f"{prefix}{open_quote}{data_uri}{close_quote}"
+
+        return _CID_IMG_SRC_RE.sub(_replace, html)
+
     def _escape_html(self, text: str) -> str:
         """Escape HTML special characters"""
         if not isinstance(text, str):

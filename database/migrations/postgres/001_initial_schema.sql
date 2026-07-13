@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS channels (
     name VARCHAR(100) UNIQUE NOT NULL,
     type VARCHAR(50) NOT NULL,
     enabled BOOLEAN DEFAULT TRUE,
+    description TEXT,
     config_json TEXT,
     limits_json TEXT,
     error_count INTEGER DEFAULT 0,

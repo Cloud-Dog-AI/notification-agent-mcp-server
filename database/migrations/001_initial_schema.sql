@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS channels (
     name VARCHAR(100) UNIQUE NOT NULL,
     type VARCHAR(50) NOT NULL,  -- smtp, sms, whatsapp, chat_rest
     enabled BOOLEAN DEFAULT 1,
+    description TEXT,  -- first-class human description (platform-wide config-description rollout)
     config_json TEXT,  -- channel-specific configuration (encrypted)
     limits_json TEXT,  -- rate limits, quotas
     error_count INTEGER DEFAULT 0,

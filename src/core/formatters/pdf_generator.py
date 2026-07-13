@@ -935,6 +935,7 @@ class PDFGenerator:
         metadata: Optional[Dict[str, Any]] = None,
         media_links: Optional[List[Dict[str, Any]]] = None,
         processed_images: Optional[List[Dict[str, Any]]] = None,
+        inline_images: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """
         Backward-compatible wrapper used by older formatter paths.

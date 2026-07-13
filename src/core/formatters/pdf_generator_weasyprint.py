@@ -31,7 +31,7 @@ Recent Changes:
 **************************************************
 """
 
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import re
 
 from src.utils.logger import get_logger
@@ -302,29 +302,73 @@ class PDFGeneratorWeasyPrint:
         
         return '\n'.join(html_parts)
     
+    def _inline_cid_images(self, html: str, inline_images: Optional[List[Dict[str, Any]]]) -> str:
+        """Replace ``src="cid:NAME"`` references with ``data:`` URIs so WeasyPrint can embed
+        inline (CID) images — e.g. charts/maps — into the PDF. WeasyPrint cannot resolve ``cid:``
+        (those only exist in the email MIME tree), so without this the PDF loses all inline images.
+
+        inline_images: list of ``{content_id, content_type, data(base64)}`` dicts.
+        Defensive: on any error returns the HTML unchanged (never breaks PDF generation).
+        """
+        if not html or not inline_images:
+            return html
+        try:
+            cmap = {}
+            for img in inline_images:
+                if not isinstance(img, dict):
+                    continue
+                cid = img.get("content_id") or img.get("cid")
+                data = img.get("data") or img.get("content")
+                ctype = img.get("content_type") or "image/png"
+                if cid and isinstance(data, str) and data:
+                    cmap[str(cid)] = f"data:{ctype};base64,{data}"
+            if not cmap:
+                return html
+
+            def _sub(m):
+                uri = cmap.get(m.group(2))
+                return f"{m.group(1)}{uri}{m.group(3)}" if uri else m.group(0)
+
+            new_html = re.sub(r'(src\s*=\s*["\'])cid:([^"\']+)(["\'])', _sub, html)
+            replaced = len(re.findall(r'src\s*=\s*["\']data:', new_html))
+            logger.info(f"Inlined {len(cmap)} CID image(s) into PDF HTML (data-URI src count now {replaced})")
+            return new_html
+        except Exception as e:
+            logger.warning(f"CID image inlining for PDF failed, rendering without: {e}")
+            return html
+
     def generate_pdf(
         self,
         content: str,
         content_type: str = 'text',
         language: str = 'en',
         title: Optional[str] = None,
-        custom_css: Optional[str] = None
+        custom_css: Optional[str] = None,
+        inline_images: Optional[List[Dict[str, Any]]] = None
     ) -> bytes:
         """
         Generate PDF from content
-        
+
         Args:
             content: Content to convert (text, markdown, or HTML)
             content_type: Type of content ('text', 'markdown', 'html')
             language: Target language code
             title: Optional document title
             custom_css: Optional custom CSS
-            
+            inline_images: Optional CID inline images ({content_id, content_type, data}) to
+                embed into the PDF (replaces cid: references with data: URIs).
+
         Returns:
             PDF bytes
         """
-        logger.info(f"Generating PDF: type={content_type}, language={language}, length={len(content)}")
-        
+        logger.info(f"Generating PDF: type={content_type}, language={language}, length={len(content)}, "
+                    f"inline_images={len(inline_images) if inline_images else 0}")
+
+        # Embed inline (CID) images BEFORE content-type handling so charts/maps survive regardless of
+        # whether the content is labelled html/markdown/text (rich reports may arrive as 'text').
+        if inline_images:
+            content = self._inline_cid_images(content, inline_images)
+
         # Convert content to HTML
         if content_type == 'html':
             html_body = content
@@ -332,7 +376,14 @@ class PDFGeneratorWeasyPrint:
             html_body = self._markdown_to_html(content)
         else:  # text
             html_body = self._text_to_html(content)
-        
+
+        # Cloud-Dog AI branding: logo header + website footer on every generated PDF
+        try:
+            from src.core.branding import brand_pdf_html
+            html_body = brand_pdf_html(html_body)
+        except Exception:
+            pass
+
         # Build complete HTML document
         html_doc = f"""
 <!DOCTYPE html>

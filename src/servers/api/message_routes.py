@@ -3,6 +3,7 @@
 
 from fastapi import APIRouter
 from . import api_server as _api
+from ...core.inline_images import normalise_inline_images
 
 globals().update({name: value for name, value in vars(_api).items() if not name.startswith("__")})
 router = APIRouter()
@@ -40,6 +41,10 @@ class MessageRequest(BaseModel):
     variables: Optional[Dict[str, Any]] = Field(default=None, description="Template variables")
     idempotency_key: Optional[str] = Field(default=None, description="Idempotency key")
     options: Optional[Dict[str, Any]] = Field(default=None, description="Additional options")
+    inline_images: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Optional inline CID images; each item has content_id and exactly one of data, storage_path, or url",
+    )
     prompt_id: Optional[int] = Field(default=None, description="Explicit prompt ID (highest priority - FR1.15)")
     prompt_name: Optional[str] = Field(default=None, description="Explicit prompt name (highest priority - FR1.15)")
     language: Optional[str] = Field(default=None, description="Target language code (e.g., 'fr', 'de') — overrides user/default language")
@@ -255,6 +260,20 @@ async def create_message(request: MessageRequest, http_request: Request):
                 detail=f"Content block {idx}: body is required and cannot be empty"
             )
 
+    try:
+        content_payloads = [block.dict() for block in request.content]
+        top_inline_images = normalise_inline_images(request.inline_images)
+        if top_inline_images and content_payloads and not content_payloads[0].get("inline_images"):
+            content_payloads[0]["inline_images"] = top_inline_images
+        for idx, block in enumerate(content_payloads):
+            if block.get("inline_images") not in (None, ""):
+                block["inline_images"] = normalise_inline_images(block.get("inline_images"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
     # =========================================================================
     # PROCESS MESSAGE (existing code)
     # =========================================================================
@@ -445,15 +464,25 @@ async def create_message(request: MessageRequest, http_request: Request):
 
     # Enqueue message (job_manager.enqueue_message is blocking, wrap it)
     # Note: loop is already defined earlier in the function
-    # NOTIFWEB-085: capture HTTP request context for job metadata
-    _req_ip = http_request.client.host if http_request.client else None
+    # NOTIFWEB-085 / W28E-1879 (NA-J-02): capture HTTP request context for the job
+    # audit trail. Honour proxy/source metadata (X-Forwarded-For / X-Real-IP) so the
+    # recorded Client IP is the real caller, not the Traefik hop, then fall back to
+    # the direct peer address.
+    _fwd_for = http_request.headers.get("x-forwarded-for", "")
+    _real_ip = http_request.headers.get("x-real-ip", "")
+    _peer_ip = http_request.client.host if http_request.client else None
+    _req_ip = (
+        (_fwd_for.split(",")[0].strip() if _fwd_for.strip() else None)
+        or (_real_ip.strip() or None)
+        or _peer_ip
+    )
     _req_ua = http_request.headers.get("user-agent")
     _req_auth = http_request.headers.get("authorization", "")[:20] if http_request.headers.get("authorization") else "cookie"
     _req_source = "api"
 
     result = await loop.run_in_executor(None, lambda: job_manager.enqueue_message(
         created_by=request.created_by or "api",
-        content=[block.dict() for block in request.content],
+        content=content_payloads,
         destinations=destinations_with_ids,
         audience_type=request.audience_type,
         template_ref=request.template_ref,
@@ -1451,6 +1480,23 @@ async def get_message(
             if isinstance(block, dict) and block.get('body'):
                 original_content_text += block.get('body', '') + '\n'
 
+        # Re-embed inline CID images as data: URIs so they render in this online "Full
+        # Message" view. The email body references images as <img src="cid:NAME"> for
+        # multipart/related inline rendering; a browser cannot resolve cid:, so without
+        # this substitution every image is broken when viewed online. (Same fix the
+        # stored /storage/html page uses.) data: URIs render fine in a browser.
+        try:
+            from src.core.formatters.html_page_generator import HTMLPageGenerator as _HPG
+            _inline_imgs = next(
+                (b.get('inline_images') for b in content
+                 if isinstance(b, dict) and b.get('inline_images')), None)
+            _cid_map = _HPG._build_cid_data_uri_map(_inline_imgs) if _inline_imgs else {}
+            if _cid_map:
+                formatted_body = _HPG._rewrite_cid_images(formatted_body, _cid_map)
+                original_content_text = _HPG._rewrite_cid_images(original_content_text, _cid_map)
+        except Exception as _cid_exc:
+            logger.warning(f"inline-image online-view rewrite skipped: {_cid_exc}")
+
         # Get variables (original settings)
         variables_display = "None"
         if message.get('variables_json'):
@@ -1798,28 +1844,40 @@ async def list_messages(offset: int = 0, limit: int = 100, status: Optional[str]
     from ...database.repositories import MessageRepository
 
     message_repo = MessageRepository(db)
-    messages = message_repo.list_messages(offset=offset, limit=limit, status=status)
-    total = message_repo.count(status=status)
-    message_ids = [int(message["id"]) for message in messages if message.get("id") is not None]
-    delivery_summary: dict[int, dict[str, Any]] = {}
-    if message_ids:
-        placeholders = ", ".join(["?"] * len(message_ids))
-        rows = db.fetchall(
-            f"""
-            SELECT
-                d.message_id,
-                MIN(c.name) AS channel_name,
-                MIN(c.type) AS channel_type,
-                COUNT(*) AS delivery_count,
-                GROUP_CONCAT(d.destination) AS recipients
-            FROM deliveries d
-            LEFT JOIN channels c ON d.channel_id = c.id
-            WHERE d.message_id IN ({placeholders})
-            GROUP BY d.message_id
-            """,
-            tuple(message_ids),
-        )
-        delivery_summary = {int(row["message_id"]): row for row in rows}
+
+    # Offload the (blocking) SQLite round-trips to a worker thread so the list
+    # query + count + delivery-summary aggregation never run synchronously on the
+    # API server's async event loop. On the single-worker server a synchronous
+    # multi-row read (even indexed) stalls EVERY concurrent request — the same
+    # head-of-line block that surfaced as slow /auth/me and WebUI E2E timeouts.
+    def _load_messages() -> tuple[list, int, dict[int, dict[str, Any]]]:
+        rows = message_repo.list_messages(offset=offset, limit=limit, status=status)
+        total_count = message_repo.count(status=status)
+        summary: dict[int, dict[str, Any]] = {}
+        ids = [int(message["id"]) for message in rows if message.get("id") is not None]
+        if ids:
+            placeholders = ", ".join(["?"] * len(ids))
+            summary_rows = db.fetchall(
+                f"""
+                SELECT
+                    d.message_id,
+                    MIN(c.name) AS channel_name,
+                    MIN(c.type) AS channel_type,
+                    COUNT(*) AS delivery_count,
+                    GROUP_CONCAT(d.destination) AS recipients
+                FROM deliveries d
+                LEFT JOIN channels c ON d.channel_id = c.id
+                WHERE d.message_id IN ({placeholders})
+                GROUP BY d.message_id
+                """,
+                tuple(ids),
+            )
+            summary = {int(row["message_id"]): row for row in summary_rows}
+        return rows, total_count, summary
+
+    messages, total, delivery_summary = await asyncio.get_event_loop().run_in_executor(
+        None, _load_messages
+    )
 
     enriched_messages = []
     for message in messages:
@@ -1895,11 +1953,16 @@ async def cancel_message(message_identifier: str):
 
     message_id = message['id']
     cancelled_count = await loop.run_in_executor(None, job_manager.cancel_message, message_id)
+    # Re-read the message so the response reports the resulting message-level status
+    # (a queued message with no pending deliveries is still moved to 'cancelled').
+    updated = await loop.run_in_executor(None, message_repo.get_by_id, message_id)
+    message_status = (updated or {}).get("status")
 
     return {
         "message_id": message_id,
         "cancelled_count": cancelled_count,
-        "message": f"Cancelled {cancelled_count} pending deliveries",
+        "status": message_status,
+        "message": f"Cancelled {cancelled_count} pending deliveries; message status is '{message_status}'",
     }
 
 

@@ -1,11 +1,61 @@
 #!/usr/bin/env python3
 """APIRouter routes extracted from web_server.py: authentication and identity routes."""
 
+import asyncio
+
 from fastapi import APIRouter
 from . import web_server as _web
 
 globals().update({name: value for name, value in vars(_web).items() if not name.startswith("__")})
 router = APIRouter()
+
+
+def _record_last_login_sync(db_uri: str, username: str) -> None:
+    """Best-effort last_login bookkeeping for a matching DB user.
+
+    Runs the synchronous SQLite round-trip (connect + query + write). Notify uses
+    a single-writer SQLite DB with a 60s busy_timeout, so a contended write lock
+    can block for a long time. The caller offloads this to a worker thread
+    (asyncio.to_thread) so a login never blocks the event loop — otherwise ONE
+    slow last_login write freezes every concurrent request on the single web
+    worker (the cause of intermittent /auth/login timeouts). No-op on any error.
+    """
+    try:
+        if not db_uri:
+            return
+        db = get_db_manager(str(db_uri))
+        db.connect()
+        user_repo = UserRepository(db)
+        matched = user_repo.get_by_username(username)
+        if matched:
+            user_repo.update_last_login(matched["id"])
+    except Exception:
+        pass
+
+
+def _verify_db_user_sync(db_uri: str, username: str, password: str):
+    """Verify a DB-backed user (query + password-hash check) and update last_login.
+
+    Returns the matched user row on success, else None. Runs the synchronous
+    SQLite query plus the CPU-bound password-hash verification; the caller
+    offloads it to a worker thread so neither the DB lock wait nor the hash
+    compare blocks the event loop (which would stall every concurrent login).
+    Returns None on any error (mirrors the original best-effort behaviour).
+    """
+    try:
+        db = get_db_manager(str(db_uri))
+        db.connect()
+        user_repo = UserRepository(db)
+        candidate = user_repo.get_by_username(username)
+        password_hash = str((candidate or {}).get("password_hash") or "")
+        if candidate and password_hash and idam_runtime.verify_password(password, password_hash):
+            user_repo.update_last_login(candidate["id"])
+            return candidate
+    except Exception as exc:
+        if logger:
+            logger.debug(f"Database JSON auth failed for '{username}': {exc}")
+    return None
+
 
 async def login_page(request: Request, message: str = None):
     """Serve the SPA login shell for active GET /login traffic."""
@@ -78,7 +128,15 @@ async def login(username: str = Form(...), password: str = Form(...), request: R
 async def logout(request: Request):
     """Handle logout"""
     request.session.clear()
-    return RedirectResponse(url="/login", status_code=302)
+    response = RedirectResponse(url="/login", status_code=302)
+    # W28A-#A89 / W28E-1854: the redirect logout must clear the api-key bridge
+    # cookies too, mirroring POST /auth/logout. The JS-readable
+    # notification_api_key cookie re-authenticates the SPA, so clearing only the
+    # session leaves a protected route rendering the authenticated shell after
+    # logout (PS-PREPROD-DEPLOY-SMOKE PDS-013).
+    response.delete_cookie("notification_api_key", path="/")
+    response.delete_cookie("notification_role", path="/")
+    return response
 
 @router.post("/auth/login")
 async def auth_login(request: Request):
@@ -110,19 +168,9 @@ async def auth_login(request: Request):
         request.session["role"] = flat_role
         request.session["user_email"] = f"{username}@cloud-dog.local"
         # Best-effort last_login bookkeeping for a matching DB user (no-op if absent).
-        try:
-            db_uri = cfg.get("db.uri")
-            if db_uri:
-                db = get_db_manager(str(db_uri))
-                db.connect()
-                try:
-                    matched = UserRepository(db).get_by_username(username)
-                    if matched:
-                        UserRepository(db).update_last_login(matched["id"])
-                finally:
-                    db.close()
-        except Exception:
-            pass
+        # Offloaded to a worker thread so a contended SQLite write lock cannot
+        # block the event loop and stall concurrent logins.
+        await asyncio.to_thread(_record_last_login_sync, cfg.get("db.uri"), username)
         _emit_login_audit(request, username, outcome="success", auth_method="password_json")
         response = JSONResponse({"user": _session_user_payload(request)})
         api_key_for_browser = _resolved_runtime_secret(cfg.get("api_server.api_key"))
@@ -154,22 +202,11 @@ async def auth_login(request: Request):
 
     db_user = None
     if username != expected_username or password != expected_password:
-        try:
-            db_uri = _require_config(cfg.get("db.uri"), "db.uri")
-            db = get_db_manager(str(db_uri))
-            db.connect()
-            try:
-                user_repo = UserRepository(db)
-                candidate = user_repo.get_by_username(username)
-                password_hash = str((candidate or {}).get("password_hash") or "")
-                if candidate and password_hash and idam_runtime.verify_password(password, password_hash):
-                    db_user = candidate
-                    user_repo.update_last_login(candidate["id"])
-            finally:
-                db.close()
-        except Exception as exc:
-            if logger:
-                logger.debug(f"Database JSON auth failed for '{username}': {exc}")
+        # Offloaded to a worker thread so neither the SQLite lock wait nor the
+        # CPU-bound password-hash verification blocks the event loop.
+        db_user = await asyncio.to_thread(
+            _verify_db_user_sync, _require_config(cfg.get("db.uri"), "db.uri"), username, password
+        )
 
         if not db_user:
             _emit_login_audit(
@@ -191,21 +228,10 @@ async def auth_login(request: Request):
         request.session["user_id"] = 1
         request.session["role"] = "admin"
         request.session["user_email"] = f"{username}@cloud-dog.local"
-        # NOTIFWEB-096: update last_login_at on cookie login
-        try:
-            db_uri = cfg.get("db.uri")
-            if db_uri:
-                db = get_db_manager(str(db_uri))
-                db.connect()
-                try:
-                    user_repo = UserRepository(db)
-                    matched = user_repo.get_by_username(username)
-                    if matched:
-                        user_repo.update_last_login(matched["id"])
-                finally:
-                    db.close()
-        except Exception:
-            pass
+        # NOTIFWEB-096: update last_login_at on cookie login. Offloaded to a
+        # worker thread so a contended SQLite write lock cannot block the event
+        # loop and stall concurrent logins.
+        await asyncio.to_thread(_record_last_login_sync, cfg.get("db.uri"), username)
 
     _emit_login_audit(request, request.session["user"], outcome="success", auth_method="password_json")
     response = JSONResponse({"user": _session_user_payload(request)})

@@ -152,6 +152,7 @@ def _is_legacy_web_page_request(request: Request) -> bool:
         "/about",
         "/api-docs",
         "/dashboard",
+        "/developer/api-docs",
         "/deliveries",
         "/channels",
         "/users",
@@ -222,7 +223,11 @@ async def _unified_auth_bridge(request: Request, call_next):
     """Let mounted Web/A2A public routes pass the API auth middleware."""
     await _ensure_unified_surfaces_started()
     path = request.url.path or ""
-    if request.method in {"GET", "HEAD"}:
+    # WebUI page-alias redirects are for browser navigation only. An API client
+    # (identified by x-api-key, mirroring _is_legacy_web_page_request) must NOT be
+    # 308-redirected: otherwise a real API endpoint that shares a path with a WebUI
+    # page alias (e.g. GET /status -> /audit-log) is shadowed before API auth runs.
+    if request.method in {"GET", "HEAD"} and not request.headers.get("x-api-key"):
         public_aliases = getattr(_web_server, "_public_webui_alias_redirects", {})
         protected_aliases = getattr(_web_server, "_protected_webui_alias_redirects", {})
         if path in public_aliases:
@@ -297,6 +302,52 @@ async def _flat_read_only_write_gate(request: Request, call_next):
                     status_code=401,
                 )
     return await call_next(request)
+
+
+def _is_cancelled_http_request(exc: BaseException) -> bool:
+    """Recognise only the concrete Starlette/browser cancellation shapes."""
+    if "ClientDisconnect" in type(exc).__name__ or "ClientDisconnect" in str(exc):
+        return True
+    if isinstance(exc, RuntimeError) and str(exc) == "No response returned.":
+        return True
+    return any(_is_cancelled_http_request(sub) for sub in getattr(exc, "exceptions", ()))
+
+
+class _UnifiedClientDisconnectGuard:
+    """Pure-ASGI outer guard for cancelled browser requests.
+
+    A BaseHTTPMiddleware guard cannot catch a ``No response returned.`` sentinel
+    synthesized by a *later outer* BaseHTTPMiddleware layer.  Registering this
+    pure ASGI middleware after the unified gates makes it outermost among user
+    middleware and prevents routine SPA navigation cancellations from becoming
+    platform 500s while leaving every other exception untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        response_started = False
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracked_send)
+        except BaseException as exc:
+            if scope.get("type") == "http" and _is_cancelled_http_request(exc):
+                if not response_started:
+                    await Response(status_code=499)(scope, receive, send)
+                return
+            raise
+
+
+# Last registered runs first.  Keep this outside both unified BaseHTTP gates so
+# their own client-disconnect sentinels cannot escape to the platform 500 handler.
+app.add_middleware(_UnifiedClientDisconnectGuard)
 
 
 def _add_mcp_health_alias() -> None:

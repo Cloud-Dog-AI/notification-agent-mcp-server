@@ -9,6 +9,64 @@ from . import web_server as _web
 globals().update({name: value for name, value in vars(_web).items() if not name.startswith("__")})
 router = APIRouter()
 
+WEB_PROXY_MESSAGES_LIMIT_MAX = 100
+WEB_PROXY_USERS_LIMIT_MAX = 100
+
+_PRIVATE_USER_FIELDS = {
+    "password",
+    "password_hash",
+    "totp_secret",
+    "backup_codes",
+    "reset_token",
+    "api_key",
+}
+
+
+def _safe_user_record(record):
+    """Remove authentication material from a user record before WebUI output."""
+    if not isinstance(record, dict):
+        return record
+    return {key: value for key, value in record.items() if key not in _PRIVATE_USER_FIELDS}
+
+
+def _safe_user_payload(payload):
+    """Sanitise bare and enveloped user API payloads without changing shape."""
+    if isinstance(payload, list):
+        return [_safe_user_record(record) for record in payload]
+    if not isinstance(payload, dict):
+        return payload
+    safe = _safe_user_record(payload)
+    for key in ("users", "items", "data"):
+        if isinstance(safe.get(key), list):
+            safe[key] = [_safe_user_record(record) for record in safe[key]]
+    return safe
+
+
+def _idam_user_record(record):
+    """Translate an owning user record to the shared IDAM read contract."""
+    safe = _safe_user_record(record)
+    if not isinstance(safe, dict):
+        return safe
+    canonical = dict(safe)
+    canonical["name"] = safe.get("display_name") or safe.get("name") or safe.get("username")
+    canonical["disabled"] = not bool(safe.get("enabled", True))
+    canonical["is_system_admin"] = str(safe.get("role") or "").lower() == "admin"
+    canonical["last_login"] = safe.get("last_login_at") or safe.get("last_login")
+    return canonical
+
+
+def _idam_user_payload(payload):
+    """Translate a bare/enveloped users payload to canonical IDAM records."""
+    if isinstance(payload, list):
+        return [_idam_user_record(record) for record in payload]
+    if not isinstance(payload, dict):
+        return payload
+    canonical = _safe_user_record(payload)
+    for key in ("users", "items", "data"):
+        if isinstance(canonical.get(key), list):
+            canonical[key] = [_idam_user_record(record) for record in canonical[key]]
+    return _idam_user_record(canonical)
+
 @router.get("/webapi/proxy/status")
 async def proxy_status(user: str = Depends(get_current_user)):
     """Proxy status endpoint"""
@@ -1181,7 +1239,10 @@ async def proxy_disable_channel(request: Request, channel_id: int):
 @router.get("/webapi/proxy/messages")
 async def proxy_messages(offset: int = 0, limit: int = 100, status: str = None, user: str = Depends(get_current_user)):
     """Proxy messages endpoint"""
-    params = {"offset": offset, "limit": limit}
+    params = {
+        "offset": max(0, offset),
+        "limit": max(1, min(limit, WEB_PROXY_MESSAGES_LIMIT_MAX)),
+    }
     if status:
         params["status"] = status
     return await api_request("GET", "/messages", params=params)
@@ -4233,12 +4294,12 @@ async def proxy_list_users(
     user: str = Depends(get_current_user),
 ):
     """Proxy GET to list users for the monorepo UI."""
-    params = {"limit": limit}
+    params = {"limit": max(1, min(limit, WEB_PROXY_USERS_LIMIT_MAX))}
     if q:
         params["q"] = q
     if email:
         params["email"] = email
-    return await api_request("GET", "/users", params=params)
+    return _safe_user_payload(await api_request("GET", "/users", params=params))
 
 @router.post("/api/proxy/users")
 @router.post("/webapi/proxy/users")
@@ -4247,7 +4308,7 @@ async def proxy_create_user(request: Request):
     try:
         data = await request.json()
         result = await api_request("POST", "/users", data=data)
-        return result
+        return _safe_user_payload(result)
     except HTTPException as e:
         # Re-raise HTTP exceptions (422, 400, 409, etc.) as-is
         raise e
@@ -4663,7 +4724,7 @@ async def proxy_get_user(user_id: int):
     """Proxy GET to get user details"""
     try:
         result = await api_request("GET", f"/users/{user_id}")
-        return result
+        return _safe_user_payload(result)
     except Exception as e:
         logger.error(f"Error getting user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -4714,7 +4775,7 @@ async def proxy_patch_user(user_id: int, request: Request, user: str = Depends(g
     """Proxy PATCH to update user fields for the monorepo UI."""
     try:
         data = await request.json()
-        return await _patch_user_record(user_id, data)
+        return _safe_user_payload(await _patch_user_record(user_id, data))
     except Exception as e:
         logger.error(f"Error patching user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -4725,7 +4786,7 @@ async def proxy_update_user(user_id: int, request: Request, user: str = Depends(
     """Proxy PUT to update user"""
     try:
         data = await request.json()
-        return await _patch_user_record(user_id, data)
+        return _safe_user_payload(await _patch_user_record(user_id, data))
     except Exception as e:
         logger.error(f"Error updating user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -5650,6 +5711,43 @@ async def proxy_update_group_member_role(request: Request, group_id: int, user_i
 # /v1/admin/<entity> (apiBaseUrl="/webapi"); this forwards to the API server's
 # canonical /api/v1/admin/<entity> (SqlAlchemyRoleStore-backed) with the
 # session-validated api-key injected by api_request.
+@router.get("/webapi/auth/status")
+async def proxy_idam_auth_status(request: Request, user: str = Depends(get_current_user)):
+    """Return the authenticated capability shape consumed by shared IDAM.
+
+    The IDAM package mounts below ``/webapi`` and always probes
+    ``/webapi/auth/status`` before deciding whether write controls may be
+    rendered.  Notification-agent authenticates that surface with its existing
+    cookie session, so expose the session identity and flat-role decision here
+    instead of leaving every IDAM page to issue a background 404.
+    """
+    role = normalise_flat_role(request.session.get("role"))
+    return {
+        "username": user,
+        "role": role,
+        "is_system_admin": role == "admin",
+    }
+
+
+@router.get("/webapi/v1/users")
+async def proxy_idam_compact_users(user: str = Depends(get_current_user)):
+    """Serve the shared IDAM compact users collection from the owning API."""
+    payload = await api_request("GET", "/users", params={"limit": WEB_PROXY_USERS_LIMIT_MAX})
+    return _idam_user_payload(payload)
+
+
+@router.get("/webapi/v1/groups")
+async def proxy_idam_compact_groups(user: str = Depends(get_current_user)):
+    """Serve the shared IDAM compact groups collection from the owning API."""
+    return await api_request("GET", "/groups")
+
+
+@router.get("/webapi/v1/api-keys")
+async def proxy_idam_compact_api_keys(user: str = Depends(get_current_user)):
+    """Serve the shared IDAM compact API-key collection from the owning API."""
+    return await api_request("GET", "/api/v1/admin/api-keys")
+
+
 @router.api_route("/webapi/v1/admin/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_idam_admin(request: Request, path: str, user: str = Depends(get_current_user)):
     method = request.method.upper()
@@ -5659,6 +5757,90 @@ async def proxy_idam_admin(request: Request, path: str, user: str = Depends(get_
             data = await request.json()
         except Exception:
             data = None
+
+    # notification-agent owns its user and group stores on the root API
+    # surface.  The shared IDAM package uses the canonical /v1/admin contract,
+    # whose payload and update verbs differ slightly.  Keep the public shared
+    # contract canonical while translating it onto the owning API instead of
+    # forwarding writes to nonexistent /api/v1/admin routes.
+    entity, _, identifier = path.partition("/")
+    if entity == "users":
+        target = "/users" + (f"/{identifier}" if identifier else "")
+        if method == "POST":
+            payload = dict(data or {})
+            payload["display_name"] = payload.get("display_name") or payload.get("name")
+            payload["role"] = "admin" if payload.get("is_system_admin") else payload.get("role", "user")
+            payload["is_active"] = not bool(payload.get("disabled", False))
+            created = await api_request("POST", target, data=payload, params=dict(request.query_params))
+            return {"user": _idam_user_record(created)}
+        if method in ("PUT", "PATCH"):
+            payload = dict(data or {})
+            update = {
+                key: value
+                for key, value in {
+                    "display_name": payload.get("display_name") or payload.get("name"),
+                    "name": payload.get("name") or payload.get("display_name"),
+                    "language": payload.get("language"),
+                    "preferred_channel": payload.get("preferred_channel"),
+                    "content_style": payload.get("content_style"),
+                    "channel_preferences": payload.get("channel_preferences"),
+                }.items()
+                if value is not None
+            }
+            updated = await api_request("PATCH", target, data=update, params=dict(request.query_params))
+            return {"user": _idam_user_record(updated)}
+        response = await api_request(method, target, params=dict(request.query_params))
+        return _idam_user_payload(response)
+
+    if entity == "groups":
+        target = "/groups" + (f"/{identifier}" if identifier else "")
+        payload = dict(data or {})
+        has_member_ids = "member_user_ids" in payload
+        requested_member_ids = [str(value) for value in payload.pop("member_user_ids", []) if str(value)]
+        if method == "POST":
+            created = await api_request("POST", target, data=payload, params=dict(request.query_params))
+            group_id = str(created.get("id") or created.get("group_id") or "") if isinstance(created, dict) else ""
+            for user_id in requested_member_ids if group_id else []:
+                await api_request("POST", f"/groups/{group_id}/members", data={"user_id": int(user_id), "role": "member"})
+            return created
+        if method in ("PUT", "PATCH"):
+            updated = await api_request("PATCH", target, data=payload, params=dict(request.query_params))
+            if has_member_ids:
+                current = await api_request("GET", f"/groups/{identifier}/members")
+                current_members = current if isinstance(current, list) else (current or {}).get("items", [])
+                current_by_user = {str(item.get("user_id")): item for item in current_members}
+                requested = set(requested_member_ids)
+                for user_id in sorted(requested - set(current_by_user)):
+                    await api_request("POST", f"/groups/{identifier}/members", data={"user_id": int(user_id), "role": "member"})
+                for user_id in sorted(set(current_by_user) - requested):
+                    member = current_by_user[user_id]
+                    member_id = member.get("id") or member.get("member_id") or user_id
+                    await api_request("DELETE", f"/groups/{identifier}/members/{member_id}")
+            return updated
+        return await api_request(method, target, params=dict(request.query_params))
+
+    if entity == "api-keys":
+        target = "/api/v1/admin/api-keys" + (f"/{identifier}" if identifier else "")
+        payload = dict(data or {})
+        if method == "POST" and not identifier:
+            # The owning API returns the one-time secret as a flat ``api_key``
+            # string, while the shared IDAM UI consumes an ``api_key`` record
+            # envelope and reads its ``raw_key`` field. Preserve the real secret
+            # exactly once and translate the metadata fields rather than letting
+            # a successful generation render no reveal dialog.
+            payload["key_prefix"] = payload.get("key_prefix") or payload.get("name")
+            created = await api_request("POST", target, data=payload, params=dict(request.query_params))
+            record = dict(created or {}) if isinstance(created, dict) else {}
+            raw_key = record.pop("api_key", None)
+            if raw_key:
+                record["raw_key"] = raw_key
+            record["name"] = record.get("name") or payload.get("name")
+            record["groups"] = record.get("groups") or payload.get("groups", [])
+            record["user_id"] = record.get("user_id") or payload.get("user_id") or payload.get("owner_user_id")
+            record["owner_user_id"] = record.get("owner_user_id") or payload.get("owner_user_id") or payload.get("user_id")
+            return {"api_key": record}
+        return await api_request(method, target, data=data, params=dict(request.query_params))
+
     return await api_request(method, f"/api/v1/admin/{path}", data=data, params=dict(request.query_params))
 
 

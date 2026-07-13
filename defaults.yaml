@@ -560,6 +560,23 @@ storage:
     password: ""
     passive_mode: ""
 
+# External Publication Endpoint (EPE) — docs/requirements/EXTERNAL-PUBLICATION-ENDPOINT.md.
+# When enabled, external-routed recipients get their inline assets published to a public S3
+# bucket and their message links rewritten internal->external. DISABLED by default: with
+# enabled=false the delivery path is byte-for-byte unchanged. Values come from env
+# (CLOUD_DOG__NOTIFY__PUBLICATION__*), mapped at deploy time from Vault
+# dev.storage.public_notificationagent0. public_base_url should resolve for remote clients
+# (use the S3 website endpoint until the custom pub domain has DNS).
+publication:
+  enabled: false
+  public_base_url: ""
+  s3:
+    endpoint: ""
+    bucket: ""
+    access_key: ""
+    secret_key: ""
+    region: "us-east-1"
+
 # Test Configuration (defaults - override via env files)
 test:
   email_domain: "@example.com"

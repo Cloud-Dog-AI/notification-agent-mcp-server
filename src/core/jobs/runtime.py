@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict
+from uuid import NAMESPACE_URL, uuid5
 
 from cloud_dog_jobs import (
     JobQueue, JobRequest, JobStateMachine, RedisQueueBackend, SQLQueueBackend,
@@ -55,6 +56,7 @@ from cloud_dog_jobs.scheduler.policies import exponential_backoff_seconds
 
 from cloud_dog_logging import get_audit_logger
 from cloud_dog_logging.audit_schema import Actor, Target
+from sqlalchemy.exc import IntegrityError
 
 from ...config import get_config
 from cloud_dog_storage.backends.local import LocalStorage as _PlatformLocalStorage
@@ -151,19 +153,42 @@ class JobsRuntime:
         job_id: str = "",
         delivery_id: int | None = None,
         details: Dict[str, Any] | None = None,
+        client_ip: str | None = None,
+        session_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> None:
-        """Emit a PS-75 compliant audit event for a job lifecycle action."""
-        actor = Actor(type="service", id=self.server_id)
+        """Emit a PS-75 compliant audit event for a job lifecycle action.
+
+        W28E-1879 (NA-J-02): populate the NIST AU-3 request-context fields —
+        client IP / source address, session id and correlation id — on the job
+        audit event so the Jobs surface records Who/Client rather than blanks.
+        Emitted via the platform ``cloud_dog_logging`` AuditLogger (no bespoke
+        audit code): ``source_address`` binds to the top-level event field and
+        ``client_ip``/``session_id``/``correlation_id`` land in the event details.
+        """
+        actor = Actor(type="service", id=self.server_id, ip=client_ip)
         target = Target(type="queue", id=str(job_id or "notification"))
         detail_payload = dict(details or {})
         if delivery_id is not None:
             detail_payload["delivery_id"] = delivery_id
+        if client_ip:
+            detail_payload["client_ip"] = client_ip
+        if session_id:
+            detail_payload["session_id"] = session_id
+        if correlation_id:
+            detail_payload["correlation_id"] = correlation_id
+        au3: Dict[str, Any] = {"source_address": client_ip} if client_ip else {}
+        # W28E-1879: spread the detail fields as individual kwargs so they land
+        # flat in AuditEvent.details. The prior `details=detail_payload` form was
+        # captured by log_crud(**details) and double-nested as
+        # ``details={"details": {...}}``, which buried the AU-3 fields a level deep.
         self._audit_logger.log_crud(
             actor=actor,
             action=action,
             target=target,
             outcome=outcome,
-            **({"details": detail_payload} if detail_payload else {}),
+            **au3,
+            **detail_payload,
         )
 
     # ------------------------------------------------------------------
@@ -234,9 +259,10 @@ class JobsRuntime:
     ) -> str:
         existing_job = self.get_delivery_job(int(delivery_id))
         if existing_job is not None:
-            job_status = _job_status_value(existing_job.status)
-            if job_status in _TERMINAL_JOB_STATUSES:
-                self.backend.update_status(existing_job.job_id, JobStatus.QUEUED.value)
+            # Job discovery is read-only.  In particular, a worker process must
+            # never resurrect a job that another process has cancelled.  An
+            # explicit retry moves the persisted job back to QUEUED before the
+            # delivery coordinator sees it.
             return existing_job.job_id
 
         request = JobRequest(
@@ -258,7 +284,33 @@ class JobsRuntime:
             request_auth_identity=request_auth_identity,
             request_user_agent=request_user_agent,
         )
-        job_id = self.queue.submit(request)
+        deduplicated = False
+        if self.backend_name == "sql":
+            # The API server and delivery worker are separate processes.  An
+            # in-memory idempotency registry therefore cannot prevent both
+            # processes from submitting a job for the same delivery.  Use a
+            # stable primary key so the SQL database is the cross-process
+            # arbiter and the worker advances the exact job exposed by the API.
+            job = Job.from_request(request)
+            job.job_id = str(uuid5(
+                NAMESPACE_URL,
+                f"cloud-dog://notification-agent/delivery-job/{int(delivery_id)}",
+            ))
+            try:
+                job_id = self.backend.enqueue(job)
+            except IntegrityError:
+                # A concurrent process may have won the insert.  Suppress only
+                # that proven race; unrelated persistence failures must surface.
+                persisted = self.backend.get(job.job_id)
+                if (
+                    persisted is None
+                    or int((persisted.payload or {}).get("delivery_id", -1)) != int(delivery_id)
+                ):
+                    raise
+                job_id = persisted.job_id
+                deduplicated = True
+        else:
+            job_id = self.queue.submit(request)
         with self._lock:
             self._delivery_to_job[int(delivery_id)] = job_id
         self._emit_job_audit(
@@ -266,7 +318,22 @@ class JobsRuntime:
             "success",
             job_id=job_id,
             delivery_id=delivery_id,
-            details={"message_id": message_id, "channel_id": channel_id},
+            details={
+                "message_id": message_id,
+                "channel_id": channel_id,
+                # W28E-1879 (NA-J-02): originating request context on the audit
+                # trail (request_source / user_agent are the Jobs surface columns;
+                # the auth material is intentionally not duplicated here — the
+                # subject is carried as the AU-3 session_id below).
+                "request_source": request_source,
+                "user_agent": request_user_agent,
+                "deduplicated": deduplicated,
+            },
+            client_ip=request_ip,
+            # No web/api-key session store on this surface; the authenticated
+            # subject is the closest AU-3 session correlate (non-blank).
+            session_id=request_auth_identity,
+            correlation_id=f"message:{message_id}",
         )
         return job_id
 
@@ -364,6 +431,14 @@ class JobsRuntime:
         """Update a delivery job's status and emit a transition audit event."""
         job_id = self.get_delivery_job_id(int(delivery_id))
         if not job_id:
+            return False
+        current_job = self.backend.get(job_id)
+        current_status = _job_status_value(getattr(current_job, "status", None))
+        requested_status = _job_status_value(status)
+        if current_status in _TERMINAL_JOB_STATUSES and requested_status != current_status:
+            # Terminal status changes are administrative operations performed
+            # directly by the jobs API (retry/archive).  A stale in-flight
+            # worker must not overwrite cancellation or another terminal result.
             return False
         ok = self.backend.update_status(job_id, status)
         if ok and last_error:

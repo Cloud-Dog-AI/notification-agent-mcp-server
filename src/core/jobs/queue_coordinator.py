@@ -332,7 +332,10 @@ class QueueCoordinator:
                 JobStatus.CANCELLED.value,
                 JobStatus.TTL_EXPIRED.value,
             }:
-                self.jobs_runtime.mark_delivery_status(delivery_id, JobStatus.QUEUED.value)
+                # Terminal jobs stay terminal until an explicit jobs API retry
+                # changes their persisted status.  Merely observing a pending
+                # delivery must never resurrect a cancelled or completed job.
+                continue
             elif job_status == JobStatus.RETRY_WAIT.value:
                 self.jobs_runtime.mark_delivery_status(delivery_id, JobStatus.QUEUED.value)
             elif job_status == JobStatus.RUNNING.value:
@@ -363,6 +366,12 @@ class QueueCoordinator:
         delivery = self.delivery_repo.get_by_id(delivery_id)
         if not delivery:
             logger.error(f"Delivery {delivery_id} not found")
+            return
+        if self.check_delivery_cancelled(delivery_id):
+            logger.info(
+                "Ignoring completion of failed in-flight delivery %s because its job was cancelled",
+                delivery_id,
+            )
             return
 
         attempt_no = delivery["attempt_no"]
@@ -440,6 +449,12 @@ class QueueCoordinator:
             delivery_id: Delivery ID
             provider_tracking_id: External tracking ID from provider
         """
+        if self.check_delivery_cancelled(delivery_id):
+            logger.info(
+                "Ignoring completion of successful in-flight delivery %s because its job was cancelled",
+                delivery_id,
+            )
+            return
         self.delivery_repo.update_state(
             delivery_id=delivery_id,
             state=DeliveryState.SENT.value,
@@ -560,8 +575,21 @@ class QueueCoordinator:
             self.message_repo.update_status(message_id, MessageStatus.CANCELLED.value)
             logger.info(f"Cancelled message {message_id} ({cancelled_count} deliveries)")
         else:
-            # Keep message status accurate when cancellation races with in-flight delivery updates.
-            self._update_message_status(message_id)
+            # No pending deliveries were cancellable. If the message itself is still in the
+            # non-terminal QUEUED state (e.g. a 0-destination message that never produced a
+            # delivery, or one whose deliveries already reached terminal states), an explicit
+            # user cancel MUST still move the MESSAGE to CANCELLED — queued -> cancelled is a
+            # valid message transition and a queued message with nothing to deliver would
+            # otherwise be stuck queued forever. Otherwise re-derive the aggregated status.
+            message = self.message_repo.get_by_id(message_id)
+            if message and message.get("status") == MessageStatus.QUEUED.value:
+                self.message_repo.update_status(message_id, MessageStatus.CANCELLED.value)
+                logger.info(
+                    f"Cancelled message {message_id} (no pending deliveries; message was queued)"
+                )
+            else:
+                # Keep message status accurate when cancellation races with in-flight delivery updates.
+                self._update_message_status(message_id)
 
         return cancelled_count
 

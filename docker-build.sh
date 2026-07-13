@@ -67,8 +67,8 @@ CERT_FILE="${CERT_DIR}/ca.crt"
 PIP_CONF=".pip.conf.build"
 
 # ── Publication tag isolation (W28A-831) ──────────────────────────
-# PUBLICATION_TAG_SUFFIX appends an isolation suffix (e.g. public-test,
-# github-test) so publication test images never collide with dev/
+# PUBLICATION_TAG_SUFFIX appends an isolation suffix (e.g. boundary-test)
+# so publication test images never collide with dev/
 # release tags. Empty (the default) leaves behaviour unchanged.
 PUBLICATION_TAG_SUFFIX="${PUBLICATION_TAG_SUFFIX:-}"
 if [[ -n "${PUBLICATION_TAG_SUFFIX}" ]]; then
@@ -122,14 +122,14 @@ EOF
 elif [[ -n "${PYPI_USERNAME}" && -n "${PYPI_PASSWORD}" ]]; then
     cat > "${PIP_CONF}" << EOF
 [global]
-extra-index-url = https://${PYPI_USERNAME}:${PYPI_PASSWORD}@${PYPI_URL#https://}
+index-url = https://${PYPI_USERNAME}:${PYPI_PASSWORD}@${PYPI_URL#https://}
 trusted-host = $(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname)")
                files.pythonhosted.org
 EOF
 else
     cat > "${PIP_CONF}" << EOF
 [global]
-extra-index-url = ${PYPI_URL}
+index-url = ${PYPI_URL}
 trusted-host = $(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname)")
                files.pythonhosted.org
 EOF
@@ -180,9 +180,25 @@ fi
 PUBLIC_INDEX_ARGS=()
 if [[ "${VARIANT}" == "public" ]]; then
   PUBLIC_INDEX_ARGS=(--build-arg PIP_INDEX_URL="${PYPI_URL}")
+else
+  PUBLIC_INDEX_ARGS=(
+    --build-arg PYPI_URL="${PYPI_URL}"
+    --build-arg PYPI_TRUSTED_HOST="$(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname or 'pypi.cloud-dog.net')")"
+  )
 fi
 
+# ── W28C-1719 publish-before-pin guard + build-provenance revision label (fail-closed) ──
+_PBP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+"${_PBP_DIR}/scripts/publish-before-pin-guard.sh" "${_PBP_DIR}" || exit $?
+_PBP_REV="$(git -C "${_PBP_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+# W28E-1863 fix-wave-d (WSC-014): propagate build identity to the image so the
+# Dockerfile can stamp OCI labels + runtime ENV for _build_identity() / /version.
+SOURCE_COMMIT="${_PBP_REV}"
+SOURCE_BRANCH="$(git -C "${_PBP_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 docker buildx build \
+  --label "org.opencontainers.image.revision=${_PBP_REV}" \
   --progress=plain \
   --network=host \
   --load \
@@ -195,6 +211,9 @@ docker buildx build \
   --build-arg http_proxy="${http_proxy:-}" \
   --build-arg https_proxy="${https_proxy:-}" \
   --build-arg no_proxy="${no_proxy:-}" \
+  --build-arg SOURCE_COMMIT="${SOURCE_COMMIT}" \
+  --build-arg SOURCE_BRANCH="${SOURCE_BRANCH}" \
+  --build-arg BUILD_DATE="${BUILD_DATE}" \
   -t "${FOLDER}/${CONTAINER}:${EFFECTIVE_TAG}" \
   . 2>&1 | tee "${LOG_FILE}"
 

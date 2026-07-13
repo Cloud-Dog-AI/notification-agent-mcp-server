@@ -6,7 +6,7 @@ registry: service
 required: must-have
 when-applicable: ""
 template-last-updated: 2026-06-12
-template-owner: public-standards
+template-owner: platform-standards
 
 project: notification-agent-mcp-server
 doc-last-updated: 2026-06-18
@@ -113,8 +113,8 @@ publication **test** images that never collide with reserved runtime/release tag
 (default unset ⇒ behaviour unchanged):
 
 ```bash
-PUBLICATION_TAG_SUFFIX=public-test ./docker-build.sh <version>
-# builds <image>:<version>-public-test; registry tag is skipped
+PUBLICATION_TAG_SUFFIX=gitea-test ./docker-build.sh <version>
+# builds <image>:<version>-gitea-test; registry tag is skipped
 ```
 
-- Preview only: `PUBLICATION_DRY_RUN=1 PUBLICATION_TAG_SUFFIX=public-test ./docker-build.sh <version>`
+- Preview only: `PUBLICATION_DRY_RUN=1 PUBLICATION_TAG_SUFFIX=gitea-test ./docker-build.sh <version>`
