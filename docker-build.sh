@@ -183,7 +183,7 @@ if [[ "${VARIANT}" == "public" ]]; then
 else
   PUBLIC_INDEX_ARGS=(
     --build-arg PYPI_URL="${PYPI_URL}"
-    --build-arg PYPI_TRUSTED_HOST="$(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname or 'pypi.cloud-dog.net')")"
+    --build-arg PYPI_TRUSTED_HOST="$(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname or 'pypi.org')")"
   )
 fi
 

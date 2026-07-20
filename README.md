@@ -89,8 +89,8 @@ per-section matrix (all keys, defaults, overrides, descriptions) is generated in
 | `log` | `log.level` | `CLOUD_DOG__LOG__LEVEL` | Structured (`cloud_dog_logging`) log level |
 | bootstrap | — | `VAULT_ADDR` / `VAULT_TOKEN` / `VAULT_MOUNT_POINT` / `VAULT_CONFIG_PATH` | Vault bootstrap tier (only exempt `os.environ` reads); plus `CLOUD_DOG_ENV_FILES` for chained env files |
 
-Secrets are never embedded — external credentials resolve from Vault (`${vault.dev.<section>.<key>}` expressions)
-at runtime. See [env.example](env.example) for the operator-facing template. Cross-project standardisation of this
+Secrets are never embedded — external credentials are resolved from the platform secret store at runtime.
+See [env.example](env.example) for the operator-facing template. Cross-project standardisation of this
 matrix as a dedicated Web-UI **API Docs** panel tab is tracked as a shared-component item under the
 NA-X-08 platform ruling (see W28E-1874 evidence).
 

@@ -896,16 +896,22 @@ def _flat_login_accounts() -> dict[str, tuple[str, str]]:
     admin_user = str(cfg.get("web_server.username") or "admin").strip() or "admin"
     admin_pw = _resolved_runtime_secret(cfg.get("web_server.password"))
     rw_user = str(cfg.get("web_login.read_write_username") or "read-write").strip() or "read-write"
-    rw_pw = str(cfg.get("web_login.read_write_password") or "BlueRiverChair").strip() or "BlueRiverChair"
+    # W28A-SEC-R17: read-write / read-only fall back to the RESOLVED admin
+    # password when their own config key is unset — never a hardcoded public
+    # literal. This removes the committed dev/test default while keeping all
+    # three roles logging in wherever the admin secret is injected.
+    rw_pw = str(cfg.get("web_login.read_write_password") or "").strip() or admin_pw
     ro_user = str(cfg.get("web_login.read_only_username") or "read-only").strip() or "read-only"
-    ro_pw = str(cfg.get("web_login.read_only_password") or "GreenRiverDesk").strip() or "GreenRiverDesk"
+    ro_pw = str(cfg.get("web_login.read_only_password") or "").strip() or admin_pw
     accounts: dict[str, tuple[str, str]] = {}
-    # Only seed the admin account when a concrete (resolved) password exists, so
-    # an unresolved placeholder never authenticates with an empty password.
+    # Only seed an account when a concrete (resolved) password exists, so an
+    # unresolved placeholder never authenticates with an empty password.
     if admin_pw:
         accounts[admin_user] = (admin_pw, ADMIN_ROLE)
-    accounts[rw_user] = (rw_pw, READ_WRITE_ROLE)
-    accounts[ro_user] = (ro_pw, READ_ONLY_ROLE)
+    if rw_pw:
+        accounts[rw_user] = (rw_pw, READ_WRITE_ROLE)
+    if ro_pw:
+        accounts[ro_user] = (ro_pw, READ_ONLY_ROLE)
     return accounts
 
 
