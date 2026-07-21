@@ -43,7 +43,6 @@ from cloud_dog_config.export import export_config
 from cloud_dog_storage.backends.local import LocalStorage as _PlatformLocalStorage
 
 _fs = _PlatformLocalStorage(root_path="/")
-_SECRET_BACKEND_FLAG = "".join(chr(code) for code in (118, 97, 117, 108, 116)) + "_enabled"
 
 
 class RuntimeConfig:
@@ -214,7 +213,11 @@ class RuntimeConfig:
             config_yaml=str(self.config_yaml),
             defaults_yaml=str(self.defaults_yaml),
             unresolved_policy=self._unresolved_policy,
-            **{_SECRET_BACKEND_FLAG: False},
+            # Runtime environments use ${vault...} references for delivery
+            # credentials.  Resolve them through the configured Vault client;
+            # RuntimeConfig never writes Vault values or materialises them in
+            # environment files.
+            vault_enabled=True,
             transforms=[self._normalise_notify_namespace],
         )
         self._adapter = LegacyConfigAdapter(self._global, warn_on_access=False)

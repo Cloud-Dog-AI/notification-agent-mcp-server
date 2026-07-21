@@ -31,7 +31,9 @@ Related Tests: UT1.6, IT1.15
 from __future__ import annotations
 
 import asyncio
+import inspect
 from concurrent.futures import TimeoutError as FutureTimeoutError
+import json
 from threading import Thread as _Thread, Lock as _Lock, Event as _Event
 import uuid
 from typing import Any, Dict, Optional
@@ -43,6 +45,37 @@ from src.core.reliability.circuit_breaker import CircuitBreaker
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class NotificationStructuredOutputError(RuntimeError):
+    """The provider did not satisfy the notification content schema."""
+
+
+_NOTIFICATION_CONTENT_SCHEMA = {
+    "type": "object",
+    "properties": {"content": {"type": "string", "minLength": 1}},
+    "required": ["content"],
+    "additionalProperties": False,
+}
+
+# ``cloud-dog-llm==0.4.1`` deliberately exposes a compact portable
+# ``LLMRequest`` model.  Structured output travels through its provider-neutral
+# ``params`` mapping; newer package-only ResponseFormat helpers are not part of
+# the sealed notification runtime contract.
+_NOTIFICATION_CONTENT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "notification_content",
+        "schema": _NOTIFICATION_CONTENT_SCHEMA,
+        "strict": True,
+    },
+}
+
+_STRUCTURED_SYSTEM_PROMPT = (
+    "Return only the final notification result through the supplied JSON schema. "
+    "Put the complete formatted, translated, converted, or summarised result in "
+    "the content field. Do not include analysis, reasoning, a preamble, or extra fields."
+)
 
 
 class LLMManager:
@@ -249,6 +282,16 @@ class LLMManager:
     def invoke(self, prompt: str, timeout: int = 300, **kwargs) -> str:
         return self._circuit_breaker.call(self._invoke_impl, prompt, timeout=timeout, **kwargs)
 
+    def invoke_structured(self, prompt: str, timeout: int = 300, **kwargs) -> str:
+        """Return schema-validated final content with at most one repair attempt."""
+        return self._circuit_breaker.call(
+            self._invoke_impl,
+            prompt,
+            timeout=timeout,
+            structured=True,
+            **kwargs,
+        )
+
     def _invoke_impl(self, prompt: str, timeout: int = 300, **kwargs) -> str:
         if not getattr(self, "client", None) and not self.connect():
             raise RuntimeError("LLM client is not connected")
@@ -271,6 +314,7 @@ class LLMManager:
         else:
             temperature = None
 
+        structured = bool(kwargs.pop("structured", False))
         params: Dict[str, Any] = {}
         for key in (
             "top_p",
@@ -319,35 +363,122 @@ class LLMManager:
             # fallback ceiling rather than half the context window.
             max_tokens = max(512, min(2048, effective_num_ctx // 8))
 
-        request = LLMRequest(
-            provider_id=self._provider_id(),
-            model=str(self._require("model")),
-            temperature=temperature,
-            max_tokens=max_tokens,
-            messages=[Message(role="user", content=str(prompt))],
-            params=params,
-        )
+        think = self._get("think", False)
+        if isinstance(think, str):
+            think = think.strip().lower() in {"1", "true", "yes", "on"}
+        think_budget = self._get("think_budget")
+        if think_budget is not None and think_budget != "":
+            try:
+                think_budget = int(think_budget)
+            except (TypeError, ValueError):
+                think_budget = None
+        else:
+            think_budget = None
+
+        messages = [Message(role="user", content=str(prompt))]
+        if structured:
+            messages.insert(0, Message(role="system", content=_STRUCTURED_SYSTEM_PROMPT))
+
+        def _request(request_messages: list[Message]) -> LLMRequest:
+            request_params = dict(params)
+            request_kwargs: Dict[str, Any] = {
+                "provider_id": self._provider_id(),
+                "model": str(self._require("model")),
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "messages": request_messages,
+                "think": bool(think),
+                "think_budget": think_budget,
+                "params": request_params,
+            }
+            # cloud-dog-llm 0.4.1 carries portable extension fields in
+            # ``params``; later committed runtimes reject that representation
+            # and require the typed ``response_format`` constructor field.
+            # Select the representation from the installed request contract so
+            # the sealed image and current integration runner both emit a real
+            # structured request rather than an invalid compatibility payload.
+            if structured and "response_format" in inspect.signature(LLMRequest).parameters:
+                # ResponseFormat is absent from the sealed 0.4.1 exports but
+                # required as a typed object by newer providers.
+                import cloud_dog_llm
+
+                response_format_type = getattr(cloud_dog_llm, "ResponseFormat", None)
+                if response_format_type is None:
+                    raise RuntimeError("Installed typed LLMRequest has no ResponseFormat contract")
+                request_kwargs["response_format"] = response_format_type(
+                    name="notification_content",
+                    json_schema=_NOTIFICATION_CONTENT_SCHEMA,
+                    strict=True,
+                )
+            elif structured:
+                request_params["response_format"] = _NOTIFICATION_CONTENT_RESPONSE_FORMAT
+            return LLMRequest(**request_kwargs)
+
         session = SessionContext(
             session_id=f"notify-{uuid.uuid4().hex}",
             correlation_id=f"notify-{uuid.uuid4().hex}",
         )
 
-        try:
-            response = self._run_async(
-                self.client.chat(request, session),
-                timeout_seconds=float(timeout),
+        def _chat(request_messages: list[Message]):
+            try:
+                return self._run_async(
+                    self.client.chat(_request(request_messages), session),
+                    timeout_seconds=float(timeout),
+                )
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"LLM invocation failed with fatal exception: {type(exc).__name__}: {exc}"
+                ) from exc
+
+        response = _chat(messages)
+        if not structured:
+            if response is None or not str(response.content).strip():
+                raise RuntimeError("LLM returned empty response")
+            return str(response.content)
+
+        def _validated_content(candidate: Any) -> Optional[str]:
+            parsed = getattr(candidate, "parsed_output", None)
+            error = getattr(candidate, "structured_error", None)
+            if parsed is None and not error:
+                try:
+                    parsed = json.loads(str(getattr(candidate, "content", "")))
+                except (TypeError, ValueError):
+                    parsed = None
+            if error or not isinstance(parsed, dict) or set(parsed) != {"content"}:
+                return None
+            content = parsed.get("content")
+            return content.strip() if isinstance(content, str) and content.strip() else None
+
+        content = _validated_content(response)
+        if content is not None:
+            return content
+
+        logger.warning(
+            "LLM structured notification validation failed; issuing one bounded repair",
+            extra={
+                "provider": self._provider_id(),
+                "model": str(self._require("model")),
+                "repair_attempt": 1,
+            },
+        )
+        repair_messages = messages + [
+            Message(
+                role="user",
+                content=(
+                    "The previous response failed the required notification_content schema. "
+                    "Retry once and satisfy the supplied schema exactly; return the complete "
+                    "final result in the content field only."
+                ),
             )
-        except KeyboardInterrupt:
-            raise
-        except BaseException as exc:  # noqa: BLE001
-            # A provider/runtime failure must degrade a single delivery, not tear down
-            # the whole notification API worker process.
-            raise RuntimeError(
-                f"LLM invocation failed with fatal exception: {type(exc).__name__}: {exc}"
-            ) from exc
-        if response is None or not str(response.content).strip():
-            raise RuntimeError("LLM returned empty response")
-        return str(response.content)
+        ]
+        repaired = _validated_content(_chat(repair_messages))
+        if repaired is None:
+            raise NotificationStructuredOutputError(
+                "LLM structured notification validation failed after one repair attempt"
+            )
+        return repaired
 
     def get_provider(self) -> str:
         return self.provider

@@ -444,6 +444,15 @@ async def _inject_api_key_for_public_storage_links(request: Request, call_next):
         and bool(message_suffix)
         and "/" not in message_suffix
     )
+    # W28E-1885 D-021: mark genuinely anonymous capability-URL access to a message read link.
+    # An operator's authenticated UI proxies with an X-API-Key header, so the only requests that
+    # reach here WITHOUT one — and get the bootstrap key injected — are unauthenticated readers
+    # following the emailed "View it online" link. The message render uses this flag to suppress
+    # internal diagnostics (destination address, original submission, settings, delivery state)
+    # from that anonymous view.
+    request.state.public_link_access = bool(
+        is_public_message_get and not request.headers.get("x-api-key")
+    )
     if (
         (is_public_storage_get or is_public_message_get)
         and not request.headers.get("x-api-key")

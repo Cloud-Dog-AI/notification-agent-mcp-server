@@ -26,7 +26,7 @@ doc-conformance-stamp: 2026-06-18T00:00:00Z
 Prerequisites:
 
 - Docker 24 or newer with BuildKit enabled
-- Python 3.12 or newer if you run the package locally
+- Python 3.13 or newer if you run the package locally (project runtime contract, W28R-3017/NF-005)
 - Public package source: `https://pypi.org/simple` (the `cloud-dog-*` platform
   packages must be available on that index; see [EXTERNAL-BUILD.md](EXTERNAL-BUILD.md))
 
@@ -51,7 +51,7 @@ The smoke run uses [env.example](env.example) and probes:
 ## Local Development
 
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip setuptools wheel
 # Single public index only (one index-url, nothing extra):

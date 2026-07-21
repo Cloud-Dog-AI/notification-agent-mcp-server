@@ -59,6 +59,7 @@ from cloud_dog_logging.audit_schema import Actor, Target
 from sqlalchemy.exc import IntegrityError
 
 from ...config import get_config
+from ...database.db_manager import configure_sqlite_engine_connections
 from cloud_dog_storage.backends.local import LocalStorage as _PlatformLocalStorage
 
 _fs = _PlatformLocalStorage(root_path="/")
@@ -345,13 +346,35 @@ class JobsRuntime:
         channel_id: int,
         destination: str,
         idempotency_key: str | None = None,
+        request_source: str | None = None,
+        request_ip: str | None = None,
+        request_auth_method: str | None = None,
+        request_auth_identity: str | None = None,
+        request_user_agent: str | None = None,
     ) -> Job:
+        # W28R-3017-R2 (NA-J-02): the delivery worker (get_pending_deliveries) and
+        # the API server (enqueue_message) are separate processes that BOTH try to
+        # insert the delivery job, which is keyed by a stable uuid5(delivery_id).
+        # Whichever process wins the insert owns the persisted request-context
+        # columns; the loser's context is discarded (get_delivery_job / IntegrityError
+        # de-dup). Previously this method forwarded NO request context, so when the
+        # worker poll won the race the succeeded job persisted request_auth_identity
+        # = NULL and source_address = 'not_recorded' — an intermittent actor-attribution
+        # gap that broke the Jobs Actor-filter (PS-76 JW6 own-job visibility). Thread
+        # the originating actor (reconstructed by the caller from the message's
+        # created_by) so every delivery job records the same actor regardless of which
+        # process inserts it or of channel/ordering/outcome.
         job_id = self.enqueue_delivery_job(
             delivery_id=delivery_id,
             message_id=message_id,
             channel_id=channel_id,
             destination=destination,
             idempotency_key=idempotency_key,
+            request_source=request_source,
+            request_ip=request_ip,
+            request_auth_method=request_auth_method,
+            request_auth_identity=request_auth_identity,
+            request_user_agent=request_user_agent,
         )
         job = self.backend.get(job_id)
         if job is None:
@@ -404,6 +427,32 @@ class JobsRuntime:
 
     def requeue_delivery_job(self, delivery_id: int) -> bool:
         return self.release_delivery_job(delivery_id, status=JobStatus.QUEUED.value)
+
+    def retry_delivery_job(self, delivery_id: int) -> bool:
+        """Explicitly revive a terminal delivery job for an operator resend."""
+        job_id = self.get_delivery_job_id(int(delivery_id))
+        if not job_id:
+            return False
+        job = self.backend.get(job_id)
+        current_status = _job_status_value(getattr(job, "status", None))
+        retryable = {
+            JobStatus.FAILED.value,
+            JobStatus.CANCELLED.value,
+            JobStatus.TIMEOUT.value,
+            JobStatus.DEAD_LETTERED.value,
+        }
+        if current_status not in retryable:
+            return False
+        ok = self.backend.update_status(job_id, JobStatus.QUEUED.value)
+        if ok:
+            self._emit_job_audit(
+                "job.retry",
+                "success",
+                job_id=job_id,
+                delivery_id=int(delivery_id),
+                details={"from_state": current_status, "to_state": JobStatus.QUEUED.value},
+            )
+        return bool(ok)
 
     def requeue_claimed_running_jobs(self) -> list[int]:
         recovered_delivery_ids: list[int] = []
@@ -571,6 +620,13 @@ def _build_runtime(*, database_url_override: str | None = None) -> JobsRuntime:
             raise RuntimeError("Missing required configuration: queue.sql_database_url or db.uri")
         database_url = _normalise_backend_db_url(sql_database_url)
         backend = SQLQueueBackend(database_url=database_url)
+        if database_url.startswith(f"{_SQLITE_SCHEME}:"):
+            # SQLQueueBackend creates its own SQLAlchemy engine and opens pooled
+            # connections while creating its schema.  Recycle those connections
+            # after attaching the same SQLite pragmas used by DatabaseManager;
+            # otherwise this second engine retains SQLite's 1,000-page WAL
+            # checkpoint default and can stall an API write to the shared DB.
+            configure_sqlite_engine_connections(backend._repo.engine, recycle_existing=True)
     # Read timeout/dead-letter configuration from config
     claim_timeout_seconds = int(config.get("queue.claim_timeout_seconds") or 120)
     run_timeout_ms = int(config.get("queue.run_timeout_ms") or 900_000)

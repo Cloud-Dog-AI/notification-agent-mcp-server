@@ -42,6 +42,7 @@ from httpx import (
 )
 
 from .base import ChannelAdapter, SendResult
+from ..core.formatters.slack_text import sanitize_slack_mrkdwn, strip_markup_for_fallback
 
 
 class ChatAdapter(ChannelAdapter):
@@ -120,6 +121,15 @@ class ChatAdapter(ChannelAdapter):
         start_time = time.time()
         
         destination = delivery.get("destination")
+        # Channel-based destinations (Slack and similar incoming webhooks) are
+        # represented in the delivery ledger by a stable channel-name
+        # placeholder.  The actual recipient is the channel's configured
+        # endpoint; never try to POST the placeholder as though it were a URL.
+        if self.endpoint and (
+            self.config.get("is_channel_based")
+            or not self.validate_destination(str(destination or ""))
+        ):
+            destination = self.endpoint
         if not destination or not self.validate_destination(destination):
             return SendResult(
                 success=False,
@@ -306,20 +316,32 @@ class ChatAdapter(ChannelAdapter):
         if format_type == 'slack':
             # Slack webhook format - simple text payload
             # Slack webhooks accept simple {"text": "message"} format
-            # Slack has a 4000 character limit for the text field
-            # If text is too long, truncate it
+            #
+            # This adapter is the LAST gate for every Slack payload, including the delivery
+            # worker's truncation/passthrough branches that build {"text": <raw body>} without
+            # running the smart-path converter. Sanitise here so no raw CommonMark bold
+            # (**x**), markdown heading (# x) or HTML tag reaches a mrkdwn block or the
+            # notification fallback text (W28E-1885 D-015/D-016/D-017). Both sanitisers are
+            # idempotent, so text the smart path already converted passes through unchanged.
+            #
+            # The fallback `text` field is a plain-text notification preview: strip markup.
+            # The section block is mrkdwn: convert CommonMark bold/headings/links to Slack.
+            fallback_text = strip_markup_for_fallback(text)
+            section_text = sanitize_slack_mrkdwn(_strip_duplicate_leading_title(text, title))
+
+            # Slack has a 4000 character limit for the text field. If text is too long,
+            # truncate it (after sanitising, so the limit applies to what is actually sent).
             max_text_length = 4000
-            if len(text) > max_text_length:
-                text = text[:max_text_length - 3] + "..."
-            
+            if len(fallback_text) > max_text_length:
+                fallback_text = fallback_text[:max_text_length - 3] + "..."
+
             payload = {
-                "text": text
+                "text": fallback_text
             }
-            section_text = _strip_duplicate_leading_title(text, title)
-            
+
             # Only add blocks if text is reasonable length (blocks have their own limits)
             # For very long text, just use simple text format (no blocks)
-            if len(text) <= 3000 and (title or len(text) > 100):
+            if len(fallback_text) <= 3000 and (title or len(fallback_text) > 100):
                 blocks = []
                 if title:
                     blocks.append({
@@ -334,7 +356,7 @@ class ChatAdapter(ChannelAdapter):
                     })
                 if blocks:
                     payload["blocks"] = blocks
-            
+
             return payload
         elif format_type == 'discord':
             return {

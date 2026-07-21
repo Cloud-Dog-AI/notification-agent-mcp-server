@@ -119,11 +119,18 @@ async def create_channel(channel_config: ChannelConfig, request: Request):
 
     # Register adapter
     if channel_config.enabled:
-        adapter_registry.register_channel(
-            channel_id=channel_id,
-            channel_type=channel_config.type,
-            config=channel_config.config or {},
-        )
+        try:
+            adapter_registry.register_channel(
+                channel_id=channel_id,
+                channel_type=channel_config.type,
+                config=channel_config.config or {},
+            )
+        except Exception:
+            # Adapter construction validates operational configuration. A
+            # rejected adapter must not leave an enabled, unusable channel row
+            # behind after the request reports failure.
+            channel_repo.delete(channel_id)
+            raise
     created_payload = {
         "id": channel_id,
         "name": channel_config.name,

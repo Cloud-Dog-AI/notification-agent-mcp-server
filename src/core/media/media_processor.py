@@ -161,13 +161,26 @@ class MediaProcessor:
                 (r'<img[^>]+src=["\']([^"\']+)["\']', "image"),  # HTML img
                 (r'<audio[^>]+src=["\']([^"\']+)["\']', "audio"),  # HTML audio
                 (r'<video[^>]+src=["\']([^"\']+)["\']', "video"),  # HTML video
-                (r'https?://[^\s<>"\']+\.(png|jpg|jpeg|gif|mp3|wav|ogg|mp4|webm|ogv|avi)', "auto"),  # Direct URL
             ]
+            # A fully formed HTML block declares media through its element tags. Scanning
+            # every bare URL in prose as another media item duplicates referenced images
+            # and can turn a tile-template citation into a misleading appended image.
+            if str(block_type).lower() != "html":
+                uri_patterns.append(
+                    (r'https?://[^\s<>"\']+\.(?:png|jpg|jpeg|gif|mp3|wav|ogg|mp4|webm|ogv|avi)', "auto")
+                )
             
             for pattern, media_type in uri_patterns:
                 matches = re.finditer(pattern, body, re.IGNORECASE)
                 for match in matches:
-                    uri = match.group(1) if match.groups() else match.group(0)
+                    uri = match.group(0) if media_type == "auto" else (
+                        match.group(1) if match.groups() else match.group(0)
+                    )
+                    # cid: references are resolved by the explicit inline_images contract
+                    # and embedded by the channel adapter. Treating them as generic remote
+                    # media duplicates every image and leaves browsers with broken CID URLs.
+                    if str(uri).lower().startswith("cid:"):
+                        continue
                     if media_type == "auto":
                         # Detect from extension
                         ext = uri.split(".")[-1].lower()
@@ -187,7 +200,18 @@ class MediaProcessor:
                         "method": "uri"
                     })
         
-        return media_refs
+        # The same external image can be declared by a Markdown image and also match
+        # the bare-URL detector. Preserve first-seen ordering while preventing duplicate
+        # processing and duplicate rendered output.
+        deduplicated = []
+        seen = set()
+        for ref in media_refs:
+            identity = (ref.get("type"), ref.get("uri"), ref.get("method"))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduplicated.append(ref)
+        return deduplicated
     
     def process_media(
         self,

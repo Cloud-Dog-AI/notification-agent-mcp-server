@@ -24,10 +24,20 @@ Related Architecture: OV1.1, SA1.1
 Related Tests: ST1.1
 
 Recent Changes (max 10):
+- W28R-3017: enforce project-local Python 3.13 runtime contract at package import (NF-005).
 - (Initial header added)
 
 **************************************************
 """
+
+# W28R-3017 supply-chain remediation: project-local Python 3.13 runtime contract
+# (NF-005). Every entrypoint imports `from src.config import ...`, which imports
+# this package first, so this fail-fast preflight runs on API / MCP / A2A / web /
+# worker startup and under pytest collection. A bare Dockerfile base bump is not a
+# project contract (W28R-3007 send-back precedent); this is the enforcing surface.
+from src._runtime import enforce_runtime as _enforce_runtime
+
+_enforce_runtime()
 
 __version__ = "0.1.0"
 __author__ = "Cloud Dog Engineering"

@@ -357,6 +357,11 @@ def resolve_duplicate_notification_from_db(config: Any, idempotency_key: str) ->
     return {
         "message_id": message_id,
         "delivery_ids": extract_delivery_ids(deliveries),
+        "delivery_states": {
+            int(delivery["id"]): str(delivery.get("state") or "unknown")
+            for delivery in deliveries
+            if delivery.get("id") is not None
+        },
     }
 
 
@@ -428,6 +433,29 @@ async def execute_send_notification(
                 message_id = int(duplicate["message_id"])
                 delivery_ids = [int(delivery_id) for delivery_id in duplicate.get("delivery_ids") or []]
                 if delivery_ids:
+                    delivery_states = duplicate.get("delivery_states") or {}
+                    failed_states = {
+                        "hard_failed",
+                        "soft_failed",
+                        "cancelled",
+                        "ttl_expired",
+                    }
+                    failed_delivery_ids = [
+                        delivery_id
+                        for delivery_id in delivery_ids
+                        if str(
+                            delivery_states.get(delivery_id)
+                            or delivery_states.get(str(delivery_id))
+                            or ""
+                        ).lower()
+                        in failed_states
+                    ]
+                    if failed_delivery_ids:
+                        return build_failure_tool_payload(
+                            error="Duplicate idempotency key resolved to failed deliveries",
+                            message_id=message_id,
+                            diagnostics={"failed_delivery_ids": failed_delivery_ids},
+                        )
                     return build_success_tool_payload(
                         message_id=message_id,
                         delivery_ids=delivery_ids,

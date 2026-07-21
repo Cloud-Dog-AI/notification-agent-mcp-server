@@ -85,6 +85,37 @@ _fs = _PlatformLocalStorage(root_path="/")
 logger = get_logger(__name__)
 
 
+SQLITE_WAL_AUTOCHECKPOINT_PAGES = 10000
+
+
+def configure_sqlite_engine_connections(engine: Engine, *, recycle_existing: bool = False) -> None:
+    """Apply the service's concurrency pragmas to every SQLite connection.
+
+    The notification database is shared by the API/worker repositories and the
+    SQL jobs backend.  Every engine must use the same WAL checkpoint threshold;
+    one connection left at SQLite's 1,000-page default can otherwise checkpoint
+    the shared WAL and block an unrelated API writer for several seconds.
+    """
+    if not engine.dialect.name.startswith("sqlite"):
+        return
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=60000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute(f"PRAGMA wal_autocheckpoint={SQLITE_WAL_AUTOCHECKPOINT_PAGES}")
+        finally:
+            cursor.close()
+
+    if recycle_existing:
+        # Some consumers (notably cloud_dog_jobs) create tables in their
+        # constructor before the service can register this listener.  Retire
+        # those pooled default-configured connections before the engine is used.
+        engine.dispose()
+
+
 class _ExecuteResult:
     """Compatibility wrapper with cursor-like access for legacy tests."""
 
@@ -187,14 +218,7 @@ class DatabaseManager:
                 # concurrent write waits for the lock instead of failing. PostgreSQL
                 # deployments are unaffected (guarded on the sqlite dialect).
                 if self.engine.dialect.name.startswith("sqlite"):
-                    @event.listens_for(self.engine, "connect")
-                    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
-                        cursor = dbapi_connection.cursor()
-                        try:
-                            cursor.execute("PRAGMA busy_timeout=60000")
-                            cursor.execute("PRAGMA synchronous=NORMAL")
-                        finally:
-                            cursor.close()
+                    configure_sqlite_engine_connections(self.engine)
                 with self.engine.connect() as conn:
                     # ``journal_mode`` is database-wide, not a per-connection
                     # setting.  Running it from the pool's ``connect`` event

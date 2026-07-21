@@ -42,6 +42,9 @@ from email.header import Header
 import aiosmtplib
 from aiosmtplib import SMTPException
 from email_validator import validate_email, EmailNotValidError
+
+from ..core.formatters.plaintext import html_to_plaintext
+from ..core.formatters.html_document import ensure_html_document
 import socket
 
 from .base import ChannelAdapter, SendResult, ConfirmResult, ErrorClass
@@ -69,7 +72,17 @@ class SMTPAdapter(ChannelAdapter):
         self.port = int(self._require_config(config.get("port"), "channels.smtp.default.port"))
         self.username = config.get("username")
         self.password = config.get("password")
+        configured_use_auth = config.get("use_auth")
+        self.use_auth = (
+            self._parse_bool(configured_use_auth)
+            if configured_use_auth is not None
+            else bool(self.username and self.password)
+        )
         self.from_address = self._require_config(config.get("from_address"), "channels.smtp.default.from_address")
+        # Optional: replies go here instead of the From address. Not _require_config —
+        # an existing channel without the key must keep working and fall back to From
+        # (W28E-1885 D-012: no delivered message carried a Reply-To at all).
+        self.reply_to = str(config.get("reply_to") or "").strip()
         self.use_tls = self._parse_bool(self._require_config(config.get("use_tls"), "channels.smtp.default.use_tls"))
         self.use_starttls = self._parse_bool(self._require_config(config.get("use_starttls"), "channels.smtp.default.use_starttls"))
         self.timeout = int(self._require_config(config.get("timeout"), "channels.smtp.default.timeout"))
@@ -143,7 +156,8 @@ class SMTPAdapter(ChannelAdapter):
                 hostname=self.host,
                 port=self.port,
                 timeout=self.timeout,
-                use_tls=self.use_tls
+                use_tls=self.use_tls,
+                start_tls=False,
             ) as smtp:
                 if self.use_starttls and not self.use_tls:
                     await smtp.starttls()
@@ -170,12 +184,13 @@ class SMTPAdapter(ChannelAdapter):
                 hostname=self.host,
                 port=self.port,
                 timeout=self.timeout,
-                use_tls=self.use_tls
+                use_tls=self.use_tls,
+                start_tls=False,
             ) as smtp:
                 if self.use_starttls and not self.use_tls:
                     await smtp.starttls()
                 
-                if self.username and self.password:
+                if self.use_auth and self.username and self.password:
                     await smtp.login(self.username, self.password)
                 
                 return type('Result', (), {
@@ -224,14 +239,15 @@ class SMTPAdapter(ChannelAdapter):
                 hostname=self.host,
                 port=self.port,
                 timeout=self.timeout,
-                use_tls=self.use_tls
+                use_tls=self.use_tls,
+                start_tls=False,
             ) as smtp:
                 # Start TLS if configured
                 if self.use_starttls and not self.use_tls:
                     await smtp.starttls()
                 
                 # Authenticate if credentials provided and supported
-                if self.username and self.password:
+                if self.use_auth and self.username and self.password:
                     try:
                         await smtp.login(self.username, self.password)
                     except SMTPException as auth_error:
@@ -292,6 +308,21 @@ class SMTPAdapter(ChannelAdapter):
                 "content_type": delivery.get("content_type", "text")
             }
     
+    def _resolve_reply_to(self, content: Dict[str, Any], from_address: str) -> str:
+        """Reply-To for an outgoing message.
+
+        Precedence: per-message override -> channel config -> the From address.
+        Falling back to From guarantees the header is always present and always
+        answerable; before W28E-1885 (D-012) no delivered message carried one at all,
+        so a recipient hitting Reply had no defined destination.
+
+        ``getattr`` rather than ``self.reply_to``: the MIME unit tests construct the
+        adapter via ``__new__`` and set only the attributes ``_build_message`` needs,
+        so the instance legitimately may not carry the config attribute.
+        """
+        configured = getattr(self, 'reply_to', '') or ''
+        return str(content.get('reply_to') or configured or from_address or '').strip()
+
     def _build_message(self, destination: str, content: Dict[str, Any]) -> MIMEMultipart:
         """
         Build MIME message from content dict.
@@ -345,6 +376,7 @@ class SMTPAdapter(ChannelAdapter):
                 from_header=from_header,
                 attachments=attachments,
                 inline_images=inline_images,
+                reply_to=self._resolve_reply_to(content, from_address),
             )
 
         # If we have attachments, use 'mixed' multipart, otherwise 'alternative'
@@ -361,15 +393,19 @@ class SMTPAdapter(ChannelAdapter):
             msg['Subject'] = self._encode_header(subject)
             msg['From'] = from_header
             msg['To'] = destination
+            reply_to = self._resolve_reply_to(content, from_address)
+            if reply_to:
+                msg['Reply-To'] = reply_to
             
             # Create body part (alternative for HTML/text)
             body_msg = MIMEMultipart('alternative')
             
             if is_html:
                 # Create plain text version (strip HTML tags)
-                import re
-                plain_body = re.sub(r'<[^>]+>', '', body)
-                plain_body = re.sub(r'\n\s*\n', '\n\n', plain_body)  # Clean up extra whitespace
+                # W28E-1885 D-010: render tables (HTML and markdown) into a readable, aligned
+                # text/plain alternative instead of a naive tag-strip that mashed cells together
+                # and left raw markdown pipe rows.
+                plain_body = html_to_plaintext(body)
                 
                 # Attach plain text version first
                 part1 = MIMEText(plain_body, 'plain', 'utf-8')
@@ -379,7 +415,9 @@ class SMTPAdapter(ChannelAdapter):
                 body_msg.attach(part1)
                 
                 # Attach HTML version
-                part2 = MIMEText(body, 'html', 'utf-8')
+                # W28E-1885 D-013: emit a well-formed HTML document (DOCTYPE + head + body, with
+                # branding/anchor folded inside <body>) rather than the raw fragment.
+                part2 = MIMEText(ensure_html_document(body), 'html', 'utf-8')
                 # Remove MIME-Version from part (already on main message)
                 if 'MIME-Version' in part2:
                     del part2['MIME-Version']
@@ -444,11 +482,15 @@ class SMTPAdapter(ChannelAdapter):
                 msg['Subject'] = self._encode_header(subject)
                 msg['From'] = from_header
                 msg['To'] = destination
+                reply_to = self._resolve_reply_to(content, from_address)
+                if reply_to:
+                    msg['Reply-To'] = reply_to
                 
                 # Create plain text version (strip HTML tags)
-                import re
-                plain_body = re.sub(r'<[^>]+>', '', body)
-                plain_body = re.sub(r'\n\s*\n', '\n\n', plain_body)  # Clean up extra whitespace
+                # W28E-1885 D-010: render tables (HTML and markdown) into a readable, aligned
+                # text/plain alternative instead of a naive tag-strip that mashed cells together
+                # and left raw markdown pipe rows.
+                plain_body = html_to_plaintext(body)
                 
                 # Attach plain text version first
                 part1 = MIMEText(plain_body, 'plain', 'utf-8')
@@ -458,7 +500,9 @@ class SMTPAdapter(ChannelAdapter):
                 msg.attach(part1)
                 
                 # Attach HTML version
-                part2 = MIMEText(body, 'html', 'utf-8')
+                # W28E-1885 D-013: emit a well-formed HTML document (DOCTYPE + head + body, with
+                # branding/anchor folded inside <body>) rather than the raw fragment.
+                part2 = MIMEText(ensure_html_document(body), 'html', 'utf-8')
                 # Remove MIME-Version from part (already on main message)
                 if 'MIME-Version' in part2:
                     del part2['MIME-Version']
@@ -476,6 +520,9 @@ class SMTPAdapter(ChannelAdapter):
                 msg['Subject'] = self._encode_header(subject)
                 msg['From'] = from_header
                 msg['To'] = destination
+                reply_to = self._resolve_reply_to(content, from_address)
+                if reply_to:
+                    msg['Reply-To'] = reply_to
                 
                 part = MIMEText(body, 'plain', 'utf-8')
                 # Remove MIME-Version from part (already on main message)
@@ -493,6 +540,7 @@ class SMTPAdapter(ChannelAdapter):
         from_header: str,
         attachments: list,
         inline_images: list,
+        reply_to: str = "",
     ) -> MIMEMultipart:
         """
         Build a MIME message that embeds inline (CID) images for an HTML body.
@@ -520,15 +568,16 @@ class SMTPAdapter(ChannelAdapter):
         # branches of _build_message.
         body_alt = MIMEMultipart('alternative')
 
-        plain_body = re.sub(r'<[^>]+>', '', body)
-        plain_body = re.sub(r'\n\s*\n', '\n\n', plain_body)  # Clean up extra whitespace
+        # W28E-1885 D-010: readable, table-aware text/plain alternative (see html_to_plaintext).
+        plain_body = html_to_plaintext(body)
 
         part1 = MIMEText(plain_body, 'plain', 'utf-8')
         if 'MIME-Version' in part1:
             del part1['MIME-Version']
         body_alt.attach(part1)
 
-        part2 = MIMEText(body, 'html', 'utf-8')
+        # W28E-1885 D-013: well-formed HTML document for the inline-images HTML alternative too.
+        part2 = MIMEText(ensure_html_document(body), 'html', 'utf-8')
         if 'MIME-Version' in part2:
             del part2['MIME-Version']
         body_alt.attach(part2)
@@ -598,6 +647,8 @@ class SMTPAdapter(ChannelAdapter):
             msg['Subject'] = self._encode_header(subject)
             msg['From'] = from_header
             msg['To'] = destination
+            if reply_to:
+                msg['Reply-To'] = reply_to
             msg.attach(related)
 
             for attachment in attachments:
@@ -638,6 +689,8 @@ class SMTPAdapter(ChannelAdapter):
         related['Subject'] = self._encode_header(subject)
         related['From'] = from_header
         related['To'] = destination
+        if reply_to:
+            related['Reply-To'] = reply_to
         return related
 
     def _encode_header(self, value: str) -> str:

@@ -32,6 +32,7 @@ Recent Changes (max 10):
 
 import ast
 import asyncio
+import time
 import html
 import json
 import re
@@ -49,6 +50,7 @@ from ..adapters import get_adapter_registry
 from ..adapters.base import ErrorClass
 from ..utils.logger import get_logger, get_context_logger
 from ..config import get_config
+from ..core.security.redaction import redact_internal_identifiers_in_blocks
 from .inline_images import resolve_inline_image_references
 from .jobs.runtime import get_jobs_runtime
 from concurrent.futures import ThreadPoolExecutor
@@ -76,6 +78,28 @@ def _get_delivery_bg_executor() -> ThreadPoolExecutor:
 
 
 logger = get_logger(__name__)
+
+
+def _resolve_adapter_destination(
+    *,
+    destination: str,
+    channel: Dict[str, Any],
+    channel_config: Dict[str, Any],
+    is_channel_based: bool,
+) -> str:
+    """Resolve the send target while preserving an explicit request address.
+
+    Channel-based deliveries without an address store the channel name as a
+    placeholder.  Only that placeholder should fall back to the configured
+    endpoint; an explicit address must reach adapter validation unchanged.
+    """
+    if not is_channel_based:
+        return destination
+
+    channel_name = str(channel.get("name") or "")
+    if destination and str(destination) != channel_name:
+        return destination
+    return str(channel_config.get("endpoint") or destination)
 
 
 def _pdf_filename_from_subject(message, fallback_id=None):
@@ -153,6 +177,18 @@ class DeliveryProcessorLoop:
         self._startup_mark = self._utcnow_naive()
         self._startup_backlog_deferred = False
         self._startup_defer_seconds = int(self.config.get("delivery_worker.startup_defer_seconds", 300))
+        # W28R-3017 R2: periodic job maintenance. run_maintenance() fails stuck
+        # 'running' jobs past the claim timeout (freeing the concurrency slots a
+        # deploy/restart would otherwise leak — the claim happens, the container is
+        # recreated before start, and startup requeue only catches its own restart),
+        # expires TTL messages, and purges retention. Its historic caller
+        # handle_ttl_expiry() had no production invoker, so this reaper never ran and
+        # orphaned 'running' jobs accumulated until the worker slots were exhausted
+        # and the queue blocked. Drive it from the worker loop on an interval.
+        self._maintenance_interval_seconds = float(
+            self.config.get("delivery_worker.maintenance_interval_seconds", 60) or 60
+        )
+        self._last_maintenance_monotonic = 0.0
         self._startup_backlog_max_id = self._capture_startup_backlog_max_id()
         self._startup_exempt_delivery_ids: set[int] = set()
         self._background_tasks: set[asyncio.Task] = set()
@@ -316,7 +352,27 @@ class DeliveryProcessorLoop:
             except BaseException:
                 logger.exception("Fatal error in delivery worker cycle", exc_info=True)
 
+            try:
+                await self._run_periodic_maintenance()
+            except Exception:
+                logger.exception("Error in periodic job maintenance", exc_info=True)
+
             await asyncio.sleep(self.poll_interval)
+
+    async def _run_periodic_maintenance(self) -> None:
+        """Periodically drive jobs_runtime.run_maintenance() so stuck 'running' jobs
+        are failed after the claim timeout (freeing leaked worker slots), TTL
+        messages expire, and retention is purged. Runs off the event loop (the scan
+        touches all jobs) and no more often than the configured interval."""
+        now = time.monotonic()
+        if (now - self._last_maintenance_monotonic) < self._maintenance_interval_seconds:
+            return
+        self._last_maintenance_monotonic = now
+        summary = await asyncio.get_event_loop().run_in_executor(
+            None, self.jobs_runtime.run_maintenance
+        )
+        if isinstance(summary, dict) and any(summary.values()):
+            logger.info(f"[JOB-MAINTENANCE] recovered/expired/purged: {summary}")
 
     def stop(self):
         """Stop the delivery worker"""
@@ -1007,6 +1063,13 @@ class DeliveryProcessorLoop:
 
         content = json.loads(message['content_json']) if message.get('content_json') else []
 
+        # W28E-1885 D-005/D-006: content-safety guard. notification-agent is the last hop before
+        # a reader, so redact internal RAG identifiers (source_id=/chunk_id=) and the internal
+        # dev/build root filesystem path from the body here — BEFORE any formatting, translation
+        # or passthrough branch reads it — so no downstream path can carry an internal leak to a
+        # recipient. Idempotent and body-only (structural fields untouched).
+        content = redact_internal_identifiers_in_blocks(content)
+
         # Get channel info
         channel = self.channel_repo.get_by_id(channel_id)
         if not channel:
@@ -1169,12 +1232,6 @@ class DeliveryProcessorLoop:
 
             if user_dest:
                 user_id = user_dest['user_id']
-                # Get user's groups
-                from ..database.repositories import GroupMemberRepository
-                member_repo = GroupMemberRepository(self.db)
-                groups = member_repo.get_user_groups(user_id)
-                if groups:
-                    group_id = groups[0]['id']  # Use first group for now
             else:
                 # Fallback: try to resolve user by email when destination mapping is missing
                 fallback_user = user_repo.get_by_email(destination)
@@ -1191,6 +1248,20 @@ class DeliveryProcessorLoop:
                         )
                     except Exception:
                         pass
+
+            # Resolve the user's group membership regardless of HOW the user was
+            # resolved (destination mapping OR email fallback). Previously group_id
+            # was only populated in the user_dest branch, so users created via
+            # POST /users (which does not register a user_destination row) fell into
+            # the email fallback and left group_id=None — starving the group-keyword
+            # and group-language prompt-selection stages (prompt_renderer priorities
+            # 4/5). AT1.6E2 exercises exactly this path.
+            if user_id and not group_id:
+                from ..database.repositories import GroupMemberRepository
+                member_repo = GroupMemberRepository(self.db)
+                groups = member_repo.get_user_groups(user_id)
+                if groups:
+                    group_id = groups[0]['id']  # Use first group for now
 
         # Persist resolved user_id into metadata for diagnostics/follow-on processing.
         if user_id:
@@ -1519,56 +1590,27 @@ class DeliveryProcessorLoop:
                     user_prefs_for_formatting = dict(user_prefs_for_formatting) if user_prefs_for_formatting else {}
                     user_prefs_for_formatting["language"] = explicit_lang
 
-                explicit_prompt_name = None
-                if "_explicit_prompt" not in message_variables:
-                    try:
-                        from ..core.prompts.prompt_manager import PromptManager
-                        prompt_manager = PromptManager(self.db)
-                        user_language = None
-                        user_keywords = []
-                        if user_id:
-                            user_row = self.db.fetchone(
-                                "SELECT language FROM users WHERE id = ?",
-                                (user_id,),
-                            )
-                            if user_row:
-                                user_language = user_row.get("language")
-                            keyword_rows = self.db.fetchall(
-                                "SELECT keyword FROM user_keywords WHERE user_id = ?",
-                                (user_id,),
-                            )
-                            user_keywords = [kw.get("keyword") for kw in (keyword_rows or []) if kw.get("keyword")]
-                        if (
-                            not user_language
-                            and destination_preferences
-                            and destination_preferences.get("language")
-                        ):
-                            user_language = str(destination_preferences.get("language") or "").strip().lower()
-                        # W28A-322: Final fallback — default to English, never to a
-                        # test-fixture language like "fr" from defaults.yaml.
-                        if not user_language:
-                            user_language = "en"
-                        prompt = None
-                        if user_keywords:
-                            for keyword in user_keywords:
-                                prompt = prompt_manager.get_prompt(channel_type=formatter_channel_type, keyword=keyword)
-                                if prompt:
-                                    break
-                        if not prompt and user_language:
-                            prompt = prompt_manager.get_prompt(channel_type=formatter_channel_type, language=user_language)
-                        if prompt:
-                            explicit_prompt_name = prompt.get("name")
-                    except Exception:
-                        explicit_prompt_name = None
-
+                # NOTE (W28R-3017 R2): we intentionally do NOT pre-resolve a
+                # keyword/language/default prompt here and inject it as
+                # `_explicit_prompt`. Doing so promoted a mere user-language / channel
+                # -default match to Priority #1 (explicit) inside the formatter, which
+                # then short-circuited the formatter's own, more complete prompt
+                # priority chain — in particular the Priority #4 GROUP-keyword prompt
+                # (this pre-resolution never considered group_id/group keywords at
+                # all). That starved AT1.6E2 (a group-keyword prompt for a user who has
+                # no user-level keyword): the language/default prompt was injected as
+                # explicit and won. The formatter's _select_prompt already resolves the
+                # full priority chain (explicit -> user keyword -> user language ->
+                # group keyword -> group language -> channel default) from the
+                # user_id/group_id/keywords we pass it, so this redundant pre-resolution
+                # is unnecessary and harmful. A genuinely explicit prompt supplied by
+                # the caller still flows through via message_variables['_explicit_prompt'].
                 format_variables = {
                     'message_id': message_id,
                     'message_guid': message_guid,
                     'preferences': user_prefs_for_formatting,
                     **message_variables  # Merge message variables (subject, etc.)
                 }
-                if explicit_prompt_name and "_explicit_prompt" not in format_variables:
-                    format_variables["_explicit_prompt"] = explicit_prompt_name
 
                 # Run LLM formatting with timeout protection.
                 # Total operation budget: caps ALL sequential LLM calls for this delivery.
@@ -3240,24 +3282,28 @@ class DeliveryProcessorLoop:
             return
 
         # Step 4: Transition to sending
-        self.delivery_repo.update_state(
+        state_updated = self.delivery_repo.update_state(
             delivery_id=delivery_id,
             state=DeliveryState.SENDING.value,
         )
+        if not state_updated:
+            ctx_logger.info("Delivery cancelled during transition to sending")
+            return
         self.job_manager.track_delivery_progress(delivery_id, DeliveryState.SENDING.value)
         self.job_manager.heartbeat_delivery(delivery_id)
 
         # Step 5: Send via adapter
 
-        # Prepare delivery dict for adapter
-        # For channel-based destinations, use channel webhook URL as destination
-        # For individual-based, use the provided destination
-        if is_channel_based:
-            # Use webhook URL from channel config as destination
-            actual_destination = channel_config.get('endpoint', destination)
-            ctx_logger.info("Channel-based delivery: using webhook URL as destination")
-        else:
-            actual_destination = destination
+        # Prepare delivery dict for adapter. Channel-based deliveries use their
+        # configured endpoint only when the persisted destination is the
+        # auto-generated channel-name placeholder. Explicit request addresses
+        # must remain visible to adapter validation and error handling.
+        actual_destination = _resolve_adapter_destination(
+            destination=destination,
+            channel=channel,
+            channel_config=channel_config,
+            is_channel_based=bool(is_channel_based),
+        )
 
         # Process media (T32: Phase 3, 6, 7, 9)
         processed_media = None
@@ -3750,6 +3796,15 @@ class DeliveryProcessorLoop:
         # Format content based on channel type
         # For Slack, the payload should already be in Slack format (stored above)
         # For other channels, format now
+        # W28R-3017-R2: target_language is read in BOTH the slack/chat branch and the
+        # else (loopback/default) branch (English email-body guard + summary link
+        # language, e.g. lines ~4136/4221) but was only ever assigned inside the deep
+        # slack summary+link sub-branch. Loopback translation/summary deliveries reach
+        # the else branch and hit `UnboundLocalError: local variable 'target_language'`,
+        # soft-failing every AT1.4 delivery through its full retry budget. Bind it once
+        # here — before the channel_type dispatch — so every branch has it; the deeper
+        # re-assignment(s) below become harmless no-ops with the identical value.
+        target_language = (user_prefs_for_formatting or {}).get("language")
         if channel_type == 'smtp':
             # Email format (with attachment support and HTML page link - Phase 8)
             message_guid = message.get('guid')
@@ -6080,8 +6135,14 @@ class DeliveryProcessorLoop:
         # Extract subject from message, variables, or formatted content
         subject = None
         body = ""
-        # Check destination preference for content_style
+        # SMTP always emits an HTML representation with a generated text/plain
+        # alternative.  A missing destination preference used to leave markdown
+        # submissions on the text path, producing received mail with no HTML
+        # MIME part.  Explicit preferences may affect formatting, but cannot
+        # remove the interoperable HTML alternative required for email output.
         content_style_pref = destination_preferences.get("content_style") if destination_preferences else None
+        if str(content_style_pref or "").strip().lower() != "html":
+            content_style_pref = "html"
 
         # FALLBACK: If destination_preferences is None, check formatted_content for HTML hints
         if content_style_pref is None and formatted_content:
@@ -6554,6 +6615,31 @@ class DeliveryProcessorLoop:
             if content_type == 'html':
                 html_page_note = f"<p><em><a href=\"{html_page_url}\">View personalized HTML page with embedded media</a></em></p>"
             body += html_page_note
+
+        # A formatter may shorten prose, but it must not silently discard a
+        # reader-facing source/report link supplied in the original message.
+        # Preserve only HTTP(S) URLs and append any omitted one as a safe link
+        # in the final channel payload.
+        try:
+            original_blocks = json.loads(message.get("content_json") or "[]")
+            original_text = "\n".join(
+                str(block.get("body") or "")
+                for block in original_blocks
+                if isinstance(block, dict)
+            )
+            original_urls = re.findall(r"https?://[^\s<>()]+", original_text)
+            missing_urls = [url for url in dict.fromkeys(original_urls) if url not in body]
+            if missing_urls:
+                import html as html_module
+                if content_type == "html":
+                    body += "\n" + "\n".join(
+                        f'<p><a href="{html_module.escape(url, quote=True)}">{html_module.escape(url)}</a></p>'
+                        for url in missing_urls
+                    )
+                else:
+                    body += "\n\n" + "\n".join(missing_urls)
+        except Exception as original_link_preservation_error:
+            logger.warning("Email source-link preservation failed: %s", original_link_preservation_error)
 
         # Ensure HTML email payload is a full document, not only fragment tags.
         if content_type == 'html':

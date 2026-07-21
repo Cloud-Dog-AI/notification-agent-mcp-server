@@ -20,6 +20,7 @@ import inspect
 import asyncio
 import json
 import uuid
+from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import Any
 
@@ -530,7 +531,6 @@ def create_unified_app(*, env_files: list[str] | None = None):
     return app
 
 
-@app.on_event("startup")
 async def _startup_unified_surfaces() -> None:
     if not getattr(_web_server.app.state, "unified_started", False):
         await _web_server._startup(_web_server.app)
@@ -542,7 +542,6 @@ async def _startup_unified_surfaces() -> None:
     _sync_web_route_state()
 
 
-@app.on_event("shutdown")
 async def _shutdown_unified_surfaces() -> None:
     if getattr(_web_server.app.state, "unified_started", False):
         await _web_server._shutdown(_web_server.app)
@@ -551,3 +550,23 @@ async def _shutdown_unified_surfaces() -> None:
         await _a2a_server._shutdown(_a2a_server.app)
         _a2a_server.app.state.unified_started = False
     await _mcp_server.close()
+
+
+# FastAPI 0.139 removed the deprecated on_event/add_event_handler APIs.  Chain
+# the unified surface lifecycle around the API app's platform-provided lifespan
+# so neither the platform startup/shutdown hooks nor the mounted-surface cleanup
+# is lost.
+_api_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _unified_lifespan(application):
+    async with _api_lifespan(application) as state:
+        try:
+            await _startup_unified_surfaces()
+            yield state
+        finally:
+            await _shutdown_unified_surfaces()
+
+
+app.router.lifespan_context = _unified_lifespan

@@ -42,7 +42,11 @@ SHUTDOWN_WAIT=${SHUTDOWN_WAIT:-10}       # Max wait for graceful shutdown (secon
 # Server-specific timeouts (unified API needs more time for initialization)
 # Allow env override because startup cost varies with real persisted test data.
 API_MAX_WAIT=${API_MAX_WAIT:-120}
-WORKER_MAX_WAIT=${WORKER_MAX_WAIT:-15}
+# The delivery worker initialises every enabled, persisted channel before
+# Uvicorn binds. Production catalogues can legitimately take longer than the
+# generic surface timeout; killing it here leaves a healthy API with no queue
+# consumer.
+WORKER_MAX_WAIT=${WORKER_MAX_WAIT:-60}
 WEB_MAX_WAIT=${WEB_MAX_WAIT:-60}
 MCP_MAX_WAIT=${MCP_MAX_WAIT:-60}
 A2A_MAX_WAIT=${A2A_MAX_WAIT:-60}

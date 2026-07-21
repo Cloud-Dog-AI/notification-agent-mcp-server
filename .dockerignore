@@ -1,0 +1,43 @@
+.git
+.venv
+node_modules
+tests/
+private/
+logs/
+data/
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+working/
+archive/
+.build-vendor/
+database/*.db
+database/*.db-shm
+database/*.db-wal
+database/*.db-journal
+cache/
+storage/
+working/
+*.log
+.w28e-1807b*
+
+# W28E-1889 canonical-source fallback is a sealed, nine-artifact build input.
+# Re-include only this narrow evidence directory after the blanket working/
+# exclusion above; unrelated working evidence never enters the image context.
+!working/
+!working/evidence/
+!working/evidence/W28E-1889/
+!working/evidence/W28E-1889/current/
+!working/evidence/W28E-1889/current/package-source-fallback/
+!working/evidence/W28E-1889/current/package-source-fallback/package-source-fallback-manifest.tsv
+!working/evidence/W28E-1889/current/package-source-fallback/wheelhouse/
+!working/evidence/W28E-1889/current/package-source-fallback/wheelhouse/cloud_dog_*.whl
+
+# Dev/CI/vault-bootstrap scripts must never enter the public image.
+# validate-vault.sh references an internal absolute dev path + VAULT bootstrap;
+# the smoke/test scripts are CI-only. None are used by the container runtime.
+scripts/validate-vault.sh
+scripts/run_docker_smoke.sh
+scripts/test_server.sh
+scripts/add_dependency_checks_to_tests.py

@@ -45,7 +45,12 @@ class MockChatAdapter(BaseChannelAdapter):
     
     URL_PATTERN = re.compile(
         r'^https?://'  # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
+        # Domain. The TLD length bound is {2,63} (the RFC 1035 maximum label length), NOT
+        # {2,6}: a 6-char cap rejects every long TLD in real use (.technology, .international)
+        # and also rejects the RFC 2606 reserved ".invalid" that the test env uses for
+        # unroutable fixtures — which is why test_validate_url_valid and test_send_chat_success
+        # both failed (send() calls validate_destination first, so one bad regex broke both).
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,63}\.?|'  # domain...
         r'localhost|'  # localhost...
         r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
         r'(?::\d+)?'  # optional port

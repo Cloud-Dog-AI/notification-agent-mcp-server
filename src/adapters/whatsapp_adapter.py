@@ -32,11 +32,11 @@ Recent Changes (max 10):
 import re
 import json
 import time
-import ssl
 from typing import Dict, Any, Optional
 from httpx import AsyncClient as SharedAsyncHTTPClient, HTTPStatusError
 
 from .base import BaseChannelAdapter, SendResult, ConfirmResult, ErrorClass
+from .ssl_context import private_ca_context
 
 
 class WhatsAppAdapter(BaseChannelAdapter):
@@ -75,7 +75,7 @@ class WhatsAppAdapter(BaseChannelAdapter):
             ca_path = str(ca_bundle).strip()
             if ca_path:
                 try:
-                    self.verify_ssl = ssl.create_default_context(cafile=ca_path)
+                    self.verify_ssl = private_ca_context(cafile=ca_path)
                 except Exception:
                     self.verify_ssl = raw_verify_ssl
         # Shared long-lived HTTP client — avoids per-call creation (W28A-93b, AGENT-LESSONS §2.3)

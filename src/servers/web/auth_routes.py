@@ -10,7 +10,7 @@ globals().update({name: value for name, value in vars(_web).items() if not name.
 router = APIRouter()
 
 
-def _record_last_login_sync(db_uri: str, username: str) -> None:
+def _record_last_login_sync(db_uri: str, username: str) -> int | None:
     """Best-effort last_login bookkeeping for a matching DB user.
 
     Runs the synchronous SQLite round-trip (connect + query + write). Notify uses
@@ -22,15 +22,70 @@ def _record_last_login_sync(db_uri: str, username: str) -> None:
     """
     try:
         if not db_uri:
-            return
+            return None
         db = get_db_manager(str(db_uri))
         db.connect()
         user_repo = UserRepository(db)
         matched = user_repo.get_by_username(username)
         if matched:
             user_repo.update_last_login(matched["id"])
+            return int(matched["id"])
     except Exception:
         pass
+    return None
+
+
+def _ensure_flat_profile_sync(
+    db_uri: str,
+    username: str,
+    email: str,
+    flat_role: str,
+) -> int | None:
+    """Return a durable owning-user id for a configured flat login.
+
+    Flat WebUI accounts authenticate from configuration, but preferences and
+    profile routes are stored in the owning users table.  Materialise that row
+    on first login with a random, unusable password so a clean database has the
+    same self-service profile contract as an established deployment.
+    """
+    try:
+        if not db_uri or not username:
+            return None
+        db = get_db_manager(str(db_uri))
+        db.connect()
+        user_repo = UserRepository(db)
+        existing = user_repo.get_by_username(username)
+        if existing:
+            user_repo.update_last_login(existing["id"])
+            return int(existing["id"])
+
+        database_role = {
+            ADMIN_ROLE: "admin",
+            READ_WRITE_ROLE: "sender",
+            READ_ONLY_ROLE: "viewer",
+        }.get(flat_role, "viewer")
+        password_hash = idam_runtime.hash_password(secrets.token_urlsafe(48))
+        try:
+            user_id = user_repo.create(
+                username=username,
+                email=email,
+                password_hash=password_hash,
+                role=database_role,
+                display_name=username,
+                user_type="system",
+            )
+        except Exception:
+            # A concurrent login may have won the unique-username insert.
+            existing = user_repo.get_by_username(username)
+            if not existing:
+                raise
+            user_id = existing["id"]
+        user_repo.update_last_login(user_id)
+        return int(user_id)
+    except Exception as exc:
+        if logger:
+            logger.debug(f"Flat-account profile initialization failed for '{username}': {exc}")
+        return None
 
 
 def _verify_db_user_sync(db_uri: str, username: str, password: str):
@@ -77,7 +132,14 @@ async def login(username: str = Form(...), password: str = Form(...), request: R
     if username == expected_username and password == expected_password:
         # Set session
         request.session["user"] = username
-        request.session["user_id"] = 1
+        profile_user_id = await asyncio.to_thread(
+            _ensure_flat_profile_sync,
+            config.get("db.uri"),
+            username,
+            f"{username}@cloud-dog.local",
+            ADMIN_ROLE,
+        )
+        request.session["user_id"] = profile_user_id or 1
         request.session["role"] = "admin"
         _emit_login_audit(request, username, outcome="success", auth_method="password_form")
         return RedirectResponse(url="/dashboard", status_code=302)
@@ -161,8 +223,15 @@ async def auth_login(request: Request):
     # account reuses the historical web_server.username/password credentials.
     flat_role = _match_flat_account(username, password)
     if flat_role is not None:
+        profile_user_id = await asyncio.to_thread(
+            _ensure_flat_profile_sync,
+            cfg.get("db.uri"),
+            username,
+            f"{username}@cloud-dog.local",
+            flat_role,
+        )
         request.session["user"] = username
-        request.session["user_id"] = {
+        request.session["user_id"] = profile_user_id or {
             ADMIN_ROLE: 1, READ_WRITE_ROLE: 2, READ_ONLY_ROLE: 3
         }[flat_role]
         request.session["role"] = flat_role
@@ -170,7 +239,12 @@ async def auth_login(request: Request):
         # Best-effort last_login bookkeeping for a matching DB user (no-op if absent).
         # Offloaded to a worker thread so a contended SQLite write lock cannot
         # block the event loop and stall concurrent logins.
-        await asyncio.to_thread(_record_last_login_sync, cfg.get("db.uri"), username)
+        profile_id = await asyncio.to_thread(
+            _record_last_login_sync, cfg.get("db.uri"), username
+        )
+        request.session["user_id"] = profile_id or {
+            ADMIN_ROLE: 1, READ_WRITE_ROLE: 2, READ_ONLY_ROLE: 3
+        }[flat_role]
         _emit_login_audit(request, username, outcome="success", auth_method="password_json")
         response = JSONResponse({"user": _session_user_payload(request)})
         api_key_for_browser = _resolved_runtime_secret(cfg.get("api_server.api_key"))
@@ -225,13 +299,15 @@ async def auth_login(request: Request):
         request.session["user_email"] = db_user.get("email")
     else:
         request.session["user"] = username
-        request.session["user_id"] = 1
         request.session["role"] = "admin"
         request.session["user_email"] = f"{username}@cloud-dog.local"
         # NOTIFWEB-096: update last_login_at on cookie login. Offloaded to a
         # worker thread so a contended SQLite write lock cannot block the event
         # loop and stall concurrent logins.
-        await asyncio.to_thread(_record_last_login_sync, cfg.get("db.uri"), username)
+        profile_id = await asyncio.to_thread(
+            _record_last_login_sync, cfg.get("db.uri"), username
+        )
+        request.session["user_id"] = profile_id or 1
 
     _emit_login_audit(request, request.session["user"], outcome="success", auth_method="password_json")
     response = JSONResponse({"user": _session_user_payload(request)})

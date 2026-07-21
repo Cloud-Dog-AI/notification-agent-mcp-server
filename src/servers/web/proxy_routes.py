@@ -5,6 +5,7 @@ import hashlib
 
 from fastapi import APIRouter, Request, Depends
 from . import web_server as _web
+from .mcp_endpoint import mcp_endpoint
 
 globals().update({name: value for name, value in vars(_web).items() if not name.startswith("__")})
 router = APIRouter()
@@ -770,9 +771,38 @@ def _request_metadata_headers(request: Request, override_key: str | None = None)
             session = {}
         web_user = str((session or {}).get("user") or "").strip()
         if web_user:
+            raw_role = str((session or {}).get("role") or "viewer").strip().lower() or "viewer"
+            # Database-backed users still carry the historical admin/user/viewer
+            # role names.  Login maps those names onto the three flat WebUI roles,
+            # so the API must receive the same decision or a logged-in ``user`` is
+            # presented as read-write in the UI while its channel list is filtered
+            # as an unbound granular principal.  Preserve explicit granular/custom
+            # roles (notably ``restricted``) so group-resource cascade enforcement
+            # remains fail-closed.
+            forwarded_role = (
+                normalise_flat_role(raw_role)
+                if raw_role
+                in {
+                    "admin",
+                    "owner",
+                    "superuser",
+                    "super-admin",
+                    "user",
+                    "member",
+                    "viewer",
+                    "read-write",
+                    "readwrite",
+                    "writer",
+                    "editor",
+                    "read-only",
+                    "readonly",
+                    "read",
+                }
+                else raw_role
+            )
             headers["X-Request-Source"] = "webui"
             headers["X-Request-User"] = web_user
-            headers["X-Request-Role"] = str((session or {}).get("role") or "viewer").strip().lower() or "viewer"
+            headers["X-Request-Role"] = forwarded_role
     return headers
 
 def _a2a_proxy_headers(request: Request, override_key: str | None = None) -> dict[str, str]:
@@ -789,7 +819,7 @@ async def _mcp_jsonrpc(method: str, params: Optional[dict] = None, extra_headers
     mcp_base_url = _require_config(cfg.get("mcp_server.base_url"), "mcp_server.base_url").rstrip("/")
     jsonrpc_path = str(cfg.get("mcp_server.jsonrpc_path") or "/messages")
     protocol_version = str(cfg.get("mcp_server.protocol_version") or "2025-11-25")
-    endpoint = f"{mcp_base_url}{jsonrpc_path}"
+    endpoint = mcp_endpoint(mcp_base_url, jsonrpc_path)
     headers: dict[str, str] = dict(extra_headers or {})
     mcp_api_key = cfg.get("mcp_server.api_key")
     if mcp_api_key and "X-API-Key" not in headers:
@@ -4342,24 +4372,20 @@ def _normalise_preference_payload(data: dict) -> dict:
     return payload
 
 
-def _preference_manager():
-    from ...core.users.user_manager import UserManager
-    from ...database.db_manager import get_db_manager
-
-    return UserManager(get_db_manager())
-
-
-def _current_profile_user(request: Request):
-    manager = _preference_manager()
+async def _current_profile_user(request: Request) -> dict:
+    """Resolve the WebUI session user against the API runtime's owning database."""
     username = str(request.session.get("user") or "").strip()
-    user_id = request.session.get("user_id")
-    if user_id:
-        user = manager.user_repo.get_by_id(int(user_id))
-        if user:
-            return manager, user
-    user = manager.user_repo.get_by_username(username)
-    if user:
-        return manager, user
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = await api_request(
+        "GET",
+        "/users",
+        params={"q": username, "limit": WEB_PROXY_USERS_LIMIT_MAX},
+    )
+    records = payload.get("items", []) if isinstance(payload, dict) else payload
+    for record in records if isinstance(records, list) else []:
+        if isinstance(record, dict) and str(record.get("username") or "").strip() == username:
+            return record
     raise HTTPException(status_code=404, detail="Current user profile not found")
 
 
@@ -4367,42 +4393,28 @@ def _current_profile_user(request: Request):
 @router.get("/webapi/proxy/users/me/preferences")
 async def proxy_get_my_preferences(request: Request, user: str = Depends(get_current_user)):
     """Read the logged-in user's self-service preference profile."""
-    manager, current_user = _current_profile_user(request)
-    return manager.get_user_with_destinations(int(current_user["id"]))
+    current_user = await _current_profile_user(request)
+    return _safe_user_payload(await api_request("GET", f"/users/{int(current_user['id'])}"))
 
 
 @router.put("/api/proxy/users/me/preferences")
 @router.put("/webapi/proxy/users/me/preferences")
 async def proxy_update_my_preferences(request: Request, user: str = Depends(get_current_user)):
     """Update the logged-in user's self-service preference profile."""
-    manager, current_user = _current_profile_user(request)
+    current_user = await _current_profile_user(request)
     data = _normalise_preference_payload(await request.json())
     user_id = int(current_user["id"])
-    manager.update_preferences(
-        user_id=user_id,
-        language=data.get("language"),
-        preferred_channel=data.get("preferred_channel"),
-        content_style=data.get("content_style"),
-        timezone=data.get("timezone"),
-    )
-    if "keywords" in data:
-        for existing in manager.keyword_repo.get_by_user_id(user_id):
-            manager.keyword_repo.remove(user_id, existing["keyword"])
-        for keyword in data["keywords"]:
-            manager.keyword_repo.add(user_id, keyword)
-    return manager.get_user_with_destinations(user_id)
+    await api_request("PUT", f"/users/{user_id}/preferences", data=data)
+    return _safe_user_payload(await api_request("GET", f"/users/{user_id}"))
 
 
 @router.delete("/api/proxy/users/me/preferences")
 @router.delete("/webapi/proxy/users/me/preferences")
 async def proxy_delete_my_preferences(request: Request, user: str = Depends(get_current_user)):
     """Clear the logged-in user's self-service preference profile."""
-    manager, current_user = _current_profile_user(request)
+    current_user = await _current_profile_user(request)
     user_id = int(current_user["id"])
-    manager.user_repo.clear_preferences(user_id)
-    for existing in manager.keyword_repo.get_by_user_id(user_id):
-        manager.keyword_repo.remove(user_id, existing["keyword"])
-    return {"success": True, "user_id": user_id}
+    return await api_request("DELETE", f"/users/{user_id}/preferences")
 
 @router.get("/api/proxy/admin/api-keys")
 @router.get("/webapi/proxy/admin/api-keys")
@@ -5813,9 +5825,9 @@ async def proxy_idam_admin(request: Request, path: str, user: str = Depends(get_
                 for user_id in sorted(requested - set(current_by_user)):
                     await api_request("POST", f"/groups/{identifier}/members", data={"user_id": int(user_id), "role": "member"})
                 for user_id in sorted(set(current_by_user) - requested):
-                    member = current_by_user[user_id]
-                    member_id = member.get("id") or member.get("member_id") or user_id
-                    await api_request("DELETE", f"/groups/{identifier}/members/{member_id}")
+                    # The owning root groups API identifies removals by user ID,
+                    # not by the group-membership row ID returned by the list.
+                    await api_request("DELETE", f"/groups/{identifier}/members/{user_id}")
             return updated
         return await api_request(method, target, params=dict(request.query_params))
 

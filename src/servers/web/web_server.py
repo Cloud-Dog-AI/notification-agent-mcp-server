@@ -260,6 +260,49 @@ def _is_known_webui_path(path: str) -> bool:
     return path in _known_webui_exact_paths or any(path.startswith(prefix) for prefix in _known_webui_prefixes)
 
 
+# W28E-1885 D-021: the emailed "View it online" link is a public capability URL —
+# /messages/{id-or-guid} with an unguessable GUID. A single {id-or-guid} segment (never the
+# list, never a subpath like /messages/{id}/deliveries) is the reader-facing message view.
+_PUBLIC_MESSAGE_VIEW = re.compile(r"^/messages/([^/]+)$")
+
+
+def _public_message_view_id(path: str) -> str | None:
+    """Return the message id/guid if path is exactly /messages/{id-or-guid}, else None."""
+    match = _PUBLIC_MESSAGE_VIEW.match(path)
+    return match.group(1) if match else None
+
+
+async def _render_public_message(request: Request, message_ref: str) -> Response:
+    """Proxy an anonymous message-capability request to the API's public render.
+
+    The internal client carries no service credential, so the API's public-link middleware
+    injects the bootstrap key and marks the request anonymous — returning the metadata-suppressed
+    render (D-021), not the operator's full diagnostic view. Authenticated visitors never reach
+    here (they keep the SPA), so operators still get the full view via the app.
+    """
+    base = str(api_base_url or "").rstrip("/")
+    if not base:
+        return RedirectResponse(url="/login", status_code=307)
+    url = f"{base}/messages/{message_ref}"
+    query = str(request.url.query or "")
+    if query:
+        url = f"{url}?{query}"
+    try:
+        upstream = await _get_internal_client().get(
+            url,
+            headers={"Accept": request.headers.get("accept", "text/html")},
+        )
+    except Exception:
+        logger.warning("Public message render proxy failed for %s", message_ref, exc_info=True)
+        return HTMLResponse("<h1>Message temporarily unavailable</h1>", status_code=502)
+    media_type = upstream.headers.get("content-type", "text/html").split(";")[0].strip()
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=media_type or "text/html",
+    )
+
+
 def _redirect_with_query(request: Request, target_path: str, *, status_code: int = 308) -> RedirectResponse:
     query = str(request.url.query or "")
     location = f"{target_path}?{query}" if query else target_path
@@ -704,6 +747,13 @@ async def spa_asset_middleware(request: Request, call_next):
     if file_response is not None:
         return file_response
 
+    # W28E-1885 D-021: serve the public message-capability URL to an anonymous reader instead
+    # of redirecting to /login. Only a bare /messages/{id-or-guid}; authenticated visitors fall
+    # through to the SPA below, so this changes nothing for logged-in operators.
+    _public_message_ref = _public_message_view_id(path)
+    if _public_message_ref is not None and not request.session.get("user"):
+        return await _render_public_message(request, _public_message_ref)
+
     if path != "/login" and not request.session.get("user"):
         return RedirectResponse(url="/login", status_code=307)
 
@@ -849,19 +899,37 @@ async def api_request(method: str, endpoint: str, data: Optional[dict] = None, p
     """Make a request to the API server via the shared httpx client."""
     if _shared_http_client is None:
         raise HTTPException(status_code=500, detail="API server not configured")
-    try:
-        response = await _shared_http_client.request(method, endpoint, json=data, params=params)
-        if response.status_code >= 400:
-            detail = response.text[:200]
-            logger.error(f"API request failed: {response.status_code} - {detail}")
-            raise HTTPException(status_code=response.status_code, detail=f"API error: {detail}")
+    normalised_method = method.upper()
+    attempts = 2 if normalised_method in {"GET", "HEAD", "OPTIONS"} else 1
+    for attempt in range(attempts):
         try:
-            return response.json()
-        except Exception:
-            return response.text
-    except HTTPRequestError as exc:
-        logger.error(f"API request error: {exc}")
-        raise HTTPException(status_code=502, detail=str(exc))
+            response = await _shared_http_client.request(
+                normalised_method,
+                endpoint,
+                json=data,
+                params=params,
+                timeout=timeout,
+            )
+            if response.status_code >= 400:
+                detail = response.text[:200]
+                logger.error(f"API request failed: {response.status_code} - {detail}")
+                raise HTTPException(status_code=response.status_code, detail=f"API error: {detail}")
+            try:
+                return response.json()
+            except Exception:
+                return response.text
+        except HTTPRequestError as exc:
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "Retrying idempotent API request after upstream connection error: "
+                    f"{normalised_method} {endpoint}: {exc}"
+                )
+                await asyncio.sleep(0)
+                continue
+            logger.error(f"API request error: {exc}")
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    raise AssertionError("API request retry loop exited unexpectedly")
 
 # Session dependency
 async def get_current_user(request: Request):
@@ -887,10 +955,11 @@ def _flat_login_accounts() -> dict[str, tuple[str, str]]:
     Thread-a (PROGRAM-IDAM-RECOVERY-2) flat WebUI login: the three flat roles
     admin / read-write / read-only. The admin account keeps the historical
     ``web_server.username``/``web_server.password`` credentials (back-compat
-    with existing demo scripts/tests); read-write and read-only are seeded so
-    all three flat roles are demoable out of the box. Credentials are
-    config-overridable (``web_login.*``); roles/permissions come from the ONE
-    shared idam guard (see ``web_flat_roles``).
+    with existing demo scripts/tests); read-write and read-only use their own
+    ``web_login.read_write_password``/``read_only_password`` when set and
+    otherwise fall back to the resolved admin password, so all three flat roles
+    are demoable without committing a default credential. Roles/permissions come
+    from the ONE shared idam guard (see ``web_flat_roles``).
     """
     cfg = config or _temp_config
     admin_user = str(cfg.get("web_server.username") or "admin").strip() or "admin"

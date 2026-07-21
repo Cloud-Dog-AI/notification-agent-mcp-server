@@ -265,8 +265,19 @@ class DeliveryRepository(BaseRepository):
         state: str,
         last_error: Optional[str] = None,
         provider_tracking_id: Optional[str] = None,
-    ):
-        """Update delivery state"""
+        allow_cancelled_override: bool = False,
+    ) -> bool:
+        """Update delivery state without reviving an asynchronously cancelled delivery.
+
+        Cancellation can race worker transitions because the API and worker use
+        separate database connections.  Once ``cancelled`` is committed, normal
+        worker progress must not move the row back to formatting/sending/sent.
+        The resend endpoint is the sole intentional override and opts in via
+        ``allow_cancelled_override``.
+
+        Returns ``True`` when the row was updated and ``False`` when the update
+        was rejected because the delivery is already cancelled (or missing).
+        """
         updates = ["state = ?", "updated_at = CURRENT_TIMESTAMP"]
         params = [state]
         
@@ -289,12 +300,17 @@ class DeliveryRepository(BaseRepository):
             updates.append("read_at = CURRENT_TIMESTAMP")
         
         params.append(delivery_id)
-        
-        self.db.execute(
-            f"UPDATE deliveries SET {', '.join(updates)} WHERE id = ?",
-            tuple(params)
+        where_clause = "id = ?"
+        if state != "cancelled" and not allow_cancelled_override:
+            where_clause += " AND state <> ?"
+            params.append("cancelled")
+
+        cursor = self.db.execute(
+            f"UPDATE deliveries SET {', '.join(updates)} WHERE {where_clause}",
+            tuple(params),
         )
         self.db.commit()
+        return bool(getattr(cursor, "rowcount", 0))
     
     def increment_attempt(self, delivery_id: int, next_action_at: Optional[datetime] = None):
         """Increment attempt counter and optionally set next_action_at"""

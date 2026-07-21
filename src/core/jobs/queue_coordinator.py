@@ -151,6 +151,7 @@ class QueueCoordinator:
         variables: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         ttl_hours: Optional[int] = None,
+        llm_profile: Optional[str] = None,
         request_source: Optional[str] = None,
         request_ip: Optional[str] = None,
         request_auth_method: Optional[str] = None,
@@ -197,6 +198,7 @@ class QueueCoordinator:
             content_json=json.dumps(content),
             template_ref=template_ref,
             variables_json=json.dumps(variables) if variables else None,
+            llm_profile=llm_profile,
             ttl_at=ttl_at,
             idempotency_key=idempotency_key,
             status=MessageStatus.QUEUED.value,
@@ -296,6 +298,38 @@ class QueueCoordinator:
             "delivery_count": delivery_count,
         }
 
+    def _delivery_request_context(self, message_id: int) -> Dict[str, Optional[str]]:
+        """Reconstruct the originating request context for a delivery job.
+
+        W28R-3017-R2 (NA-J-02): the delivery worker discovers pending deliveries
+        directly from the DB and may enqueue the delivery job before the API server
+        does. Since the job is keyed by a stable uuid5(delivery_id), whichever
+        process inserts first owns the persisted request-context columns. The worker
+        therefore MUST supply the same actor the API path records, otherwise the
+        succeeded job intermittently persists request_auth_identity = NULL and
+        source_address = 'not_recorded'. The message's ``created_by`` is exactly what
+        the API path threads as ``request_auth_identity``; source_address is set to a
+        deterministic non-blank worker marker (the true caller IP is not persisted on
+        the message, and blank would render as 'not_recorded').
+        """
+        created_by: Optional[str] = None
+        try:
+            message = self.message_repo.get_by_id(int(message_id))
+            if message:
+                cb = message.get("created_by")
+                created_by = str(cb).strip() if cb is not None and str(cb).strip() else None
+        except Exception:  # pragma: no cover - defensive; never block dispatch on audit metadata
+            created_by = None
+        # Mirror the API path (message_routes.py: ``request.created_by or "api"``) so
+        # the identity persisted is identical regardless of which process wins the race.
+        return {
+            "request_source": "delivery-worker",
+            "request_ip": "worker-local",
+            "request_auth_method": "worker",
+            "request_auth_identity": created_by or "api",
+            "request_user_agent": "notification-delivery-worker",
+        }
+
     def get_pending_deliveries(self, limit: int = 10) -> List[Dict]:
         """Get deliveries ready for processing
 
@@ -313,11 +347,25 @@ class QueueCoordinator:
             message_id = int(delivery["message_id"])
             channel_id = int(delivery["channel_id"])
             destination = str(delivery.get("destination") or "")
+            # W28R-3017-R2 (NA-J-02): reconstruct the originating request context from
+            # the message so the delivery job records the SAME actor whether the API
+            # server (enqueue_message) or this worker poll wins the stable-key insert
+            # race. Without this, a worker-created job persisted request_auth_identity
+            # = NULL / source_address = 'not_recorded', an intermittent actor gap that
+            # broke the Jobs Actor filter (PS-76 JW6 own-job visibility). The message's
+            # created_by is the authoritative subject the API path itself records as
+            # request_auth_identity.
+            req_ctx = self._delivery_request_context(message_id)
             job = self.jobs_runtime.ensure_delivery_job(
                 delivery_id=delivery_id,
                 message_id=message_id,
                 channel_id=channel_id,
                 destination=destination,
+                request_source=req_ctx["request_source"],
+                request_ip=req_ctx["request_ip"],
+                request_auth_method=req_ctx["request_auth_method"],
+                request_auth_identity=req_ctx["request_auth_identity"],
+                request_user_agent=req_ctx["request_user_agent"],
             )
             job_status = getattr(job.status, "value", str(job.status)).lower()
 

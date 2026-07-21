@@ -48,7 +48,28 @@ from cloud_dog_api_kit.a2a.card import create_a2a_card_router, A2ASkill
 from cloud_dog_api_kit.lifecycle.hooks import LifecycleHooks
 
 
-_temp_cfg = get_config()
+def _import_time_config():
+    """Config for module-level app construction, or None if unavailable.
+
+    Importing this module must not hard-fail on runtime configuration. It used to call
+    get_config() bare at import, so merely importing a2a_server (even to reach one pure
+    helper, as tests/unit/UT1.66_A2AInternalAPIBase does) forced a full config resolve and
+    raised UnresolvedPlaceholderError on db.uri — a collection error, not a test failure,
+    which took the whole unit file out. Same class as the W28A-957 lesson: optional config
+    access belongs at request/startup time, not module import.
+
+    Degrading to None here is safe: the only two module-level readers both have defaults,
+    and _startup() re-resolves the config and _require_config()s every mandatory key, so a
+    genuinely broken configuration still fails loudly at startup rather than silently
+    serving defaults.
+    """
+    try:
+        return get_config()
+    except Exception:  # pragma: no cover - import-time resilience
+        return None
+
+
+_temp_cfg = _import_time_config()
 
 # Global configuration
 config = None
@@ -56,6 +77,20 @@ logger = None
 heartbeat_task_handle = None
 # Shared long-lived HTTP client for A2A-to-API calls (W28A-93b, AGENT-LESSONS §2.3)
 _a2a_http_client: Any = None
+
+
+def _resolve_internal_api_base_url(cfg) -> str:
+    """Resolve the core API target used by this A2A process.
+
+    A deployed multi-process image exposes a public ``api_server.base_url`` for
+    clients while the A2A process must hand messages to the container-local API.
+    Honour the component-specific internal override first; retain the public API
+    value only as a backwards-compatible fallback for single-process runtimes.
+    """
+    return _require_config(
+        cfg.get("a2a_server.api_base_url") or cfg.get("api_server.base_url"),
+        "a2a_server.api_base_url/api_server.base_url",
+    )
 
 # Active WebSocket connections
 active_connections: Set[WebSocket] = set()
@@ -119,12 +154,12 @@ async def _shutdown(app):
 
 
 _lifecycle_hooks = LifecycleHooks(on_post_router=_startup, on_shutdown=_shutdown)
-_request_timeout = float(_temp_cfg.get("api_server.request_timeout") or 300)
+_request_timeout = float((_temp_cfg.get("api_server.request_timeout") if _temp_cfg else None) or 300)
 _app_kwargs = {
     "title": "Notification Agent A2A Server",
     "version": "0.1.0",
     "description": "Agent-to-agent streaming and natural-language dispatch surface",
-    "base_path": _temp_cfg.get("a2a_server.base_path", ""),
+    "base_path": (_temp_cfg.get("a2a_server.base_path", "") if _temp_cfg else ""),
     "enable_cors": False,
     "enable_docs": False,
     "enable_health": False,
@@ -345,7 +380,7 @@ async def _a2a_send_notification(text: str) -> str:
         parser = NaturalLanguageParser(db)
         parsed = parser.parse(text)
 
-        api_base_url = _cfg.get("api_server.base_url") or _cfg.get("a2a_server.api_base_url")
+        api_base_url = _cfg.get("a2a_server.api_base_url") or _cfg.get("api_server.base_url")
         if not api_base_url:
             return "Error: api_server.base_url not configured"
         api_key = _cfg.get("a2a_server.api_key") or _cfg.get("api_server.api_key") or ""
@@ -467,10 +502,9 @@ async def notify_natural(request: Request, body: dict = None):
     parser = NaturalLanguageParser(db)
     parsed = parser.parse(command)
     
-    # Get API configuration - prioritize api_server.base_url over a2a_server.api_base_url
-    # This ensures A2A server uses the same API server as configured for the system
-    api_base_url = config.get("api_server.base_url") or config.get("a2a_server.api_base_url")
-    api_base_url = _require_config(api_base_url, "api_server.base_url/a2a_server.api_base_url")
+    # Use the component-specific container-local handoff when configured.  The
+    # public API URL is a fallback for legacy/single-process deployments only.
+    api_base_url = _resolve_internal_api_base_url(config)
     api_key = config.get("a2a_server.api_key") or config.get("api_server.api_key")
     api_key = _require_config(api_key, "a2a_server.api_key/api_server.api_key")
     

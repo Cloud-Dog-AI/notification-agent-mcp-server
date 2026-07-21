@@ -124,24 +124,32 @@ elif [[ -n "${PYPI_USERNAME}" && -n "${PYPI_PASSWORD}" ]]; then
 [global]
 index-url = https://${PYPI_USERNAME}:${PYPI_PASSWORD}@${PYPI_URL#https://}
 trusted-host = $(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname)")
-               files.pythonhosted.org
 EOF
 else
     cat > "${PIP_CONF}" << EOF
 [global]
 index-url = ${PYPI_URL}
 trusted-host = $(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname)")
-               files.pythonhosted.org
 EOF
 fi
 chmod 600 "${PIP_CONF}"
+
+# The pre-build publish-before-pin guard can intentionally fail before Docker
+# starts.  Its failure must not strand the generated credential-bearing pip
+# configuration (or the transient CA copy) in the worktree.
+cleanup_generated_build_files() {
+  rm -f "${PIP_CONF}"
+  rm -f "${CERT_FILE}"
+}
+trap cleanup_generated_build_files EXIT
 
 echo "=========================================="
 echo "Docker Build Configuration"
 echo "=========================================="
 echo "Variant: ${VARIANT} (dockerfile=${DOCKERFILE})"
 echo "Container: ${FOLDER}/${CONTAINER}:${VERSION}"
-echo "Index: ${PYPI_URL}"
+PYPI_HOST="$(python3 -c "from urllib.parse import urlsplit; print(urlsplit('${PYPI_URL}').hostname or 'configured-index')")"
+echo "Index host: ${PYPI_HOST} (credentials redacted)"
 echo "Network: host (build)"
 echo "Log: ${LOG_FILE}"
 echo "CA Cert (optional): ${CUSTOM_CA_CERT}"
@@ -171,7 +179,6 @@ if [[ -n "${PUBLICATION_DRY_RUN:-}" ]]; then
   else
     echo "DRY-RUN: registry tag = (skipped; set REGISTRY to tag a registry image)"
   fi
-  rm -f "${PIP_CONF}" "${CERT_FILE}" 2>/dev/null || true
   exit 0
 fi
 
@@ -189,7 +196,24 @@ fi
 
 # ── W28C-1719 publish-before-pin guard + build-provenance revision label (fail-closed) ──
 _PBP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-"${_PBP_DIR}/scripts/publish-before-pin-guard.sh" "${_PBP_DIR}" || exit $?
+CANONICAL_SOURCE_FALLBACK_MANIFEST="${_PBP_DIR}/working/evidence/W28E-1889/current/package-source-fallback/package-source-fallback-manifest.tsv"
+CANONICAL_SOURCE_FALLBACK_ARGS=()
+if [[ -f "${CANONICAL_SOURCE_FALLBACK_MANIFEST}" ]]; then
+  # The guard below validates the manifest, every wheel and every sdist before
+  # the build may consume this narrowly-scoped fallback.  The Dockerfile uses
+  # it only for the nine cloud-dog-* pins; all other dependencies keep the
+  # existing single approved internal index.
+  CANONICAL_SOURCE_FALLBACK_ARGS=(--build-arg CANONICAL_SOURCE_FALLBACK=1)
+fi
+# W28A-SEC-R18 public-boundary scrub: the publish-before-pin guard is internal-only
+# tooling (hardcodes the internal package index host) and is excluded from the public
+# mirror. On the public boundary it is absent; skip it when not present. Internal
+# builds (guard present) keep the fail-closed behaviour unchanged.
+if [[ -x "${_PBP_DIR}/scripts/publish-before-pin-guard.sh" ]]; then
+  "${_PBP_DIR}/scripts/publish-before-pin-guard.sh" "${_PBP_DIR}" || exit $?
+else
+  echo "publish-before-pin guard absent (public boundary) — skipping."
+fi
 _PBP_REV="$(git -C "${_PBP_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 # W28E-1863 fix-wave-d (WSC-014): propagate build identity to the image so the
 # Dockerfile can stamp OCI labels + runtime ENV for _build_identity() / /version.
@@ -197,6 +221,19 @@ SOURCE_COMMIT="${_PBP_REV}"
 SOURCE_BRANCH="$(git -C "${_PBP_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# W28R-3017 Cloud-Dog-only boundary (AGENT-LESSONS §6.183 / W28R-3014 R4 accepted
+# precedent): when REGISTRY is set for a non-publication build, tag the image
+# directly with the internal registry ref so buildx never emits a
+# `naming to docker.io/...` local-tag line in the build log (0x docker.io).
+if [[ -n "${REGISTRY}" && -z "${PUBLICATION_TAG_SUFFIX}" ]]; then
+  BUILD_TAG="${REGISTRY}/${FOLDER}/${CONTAINER}:${EFFECTIVE_TAG}"
+else
+  BUILD_TAG="${FOLDER}/${CONTAINER}:${EFFECTIVE_TAG}"
+fi
+
+# The wrapper must inspect and return the build child's exact status itself;
+# temporarily disable errexit so pipefail cannot bypass cleanup and reporting.
+set +e
 docker buildx build \
   --label "org.opencontainers.image.revision=${_PBP_REV}" \
   --progress=plain \
@@ -205,6 +242,7 @@ docker buildx build \
   -f "${DOCKERFILE}" \
   --secret id=pip_conf,src="${PIP_CONF}" \
   "${PUBLIC_INDEX_ARGS[@]}" \
+  "${CANONICAL_SOURCE_FALLBACK_ARGS[@]}" \
   --build-arg HTTP_PROXY="${HTTP_PROXY:-}" \
   --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" \
   --build-arg NO_PROXY="${NO_PROXY:-}" \
@@ -214,10 +252,11 @@ docker buildx build \
   --build-arg SOURCE_COMMIT="${SOURCE_COMMIT}" \
   --build-arg SOURCE_BRANCH="${SOURCE_BRANCH}" \
   --build-arg BUILD_DATE="${BUILD_DATE}" \
-  -t "${FOLDER}/${CONTAINER}:${EFFECTIVE_TAG}" \
+  -t "${BUILD_TAG}" \
   . 2>&1 | tee "${LOG_FILE}"
 
 BUILD_STATUS=${PIPESTATUS[0]}
+set -e
 
 if [ ${BUILD_STATUS} -eq 0 ]; then
     echo ""
@@ -229,8 +268,8 @@ if [ ${BUILD_STATUS} -eq 0 ]; then
     docker images | grep "${CONTAINER}" || true
     echo ""
     if [[ -n "${REGISTRY}" && -z "${PUBLICATION_TAG_SUFFIX}" ]]; then
-        echo "To tag for registry:"
-        echo "  docker tag ${FOLDER}/${CONTAINER}:${EFFECTIVE_TAG} ${REGISTRY}/${FOLDER}/${CONTAINER}:${EFFECTIVE_TAG}"
+        echo "Image tagged registry-direct as ${BUILD_TAG} (W28R-3017 Cloud-Dog-only boundary)."
+        echo "To push: docker push ${BUILD_TAG}"
     elif [[ -n "${PUBLICATION_TAG_SUFFIX}" ]]; then
         echo "Publication test image (suffix=${PUBLICATION_TAG_SUFFIX}); internal registry tag intentionally skipped (W28A-831 isolation)."
     else
@@ -245,14 +284,6 @@ else
     echo "Build log saved to: ${LOG_FILE}"
 fi
 
-# Cleanup: remove copied CA certificate from build context
-if [ -f "${CERT_FILE}" ]; then
-    echo "Cleaning up CA certificate from build context..."
-    rm -f "${CERT_FILE}"
-fi
-
-rm -f "${PIP_CONF}"
-
 if [ ${BUILD_STATUS} -ne 0 ]; then
-    exit 1
+    exit "${BUILD_STATUS}"
 fi

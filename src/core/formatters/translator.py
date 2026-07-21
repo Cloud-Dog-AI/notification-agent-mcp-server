@@ -605,7 +605,7 @@ def _translate_uncached(
         # This prevents prompt artifacts and saves LLM quota
         detected_lang_code = None
         try:
-            from langdetect import detect_langs, LangDetectException
+            from langdetect import detect_langs
 
             # Use first 1000 chars for detection (balance between speed and accuracy)
             sample = text[:1000] if len(text) > 1000 else text
@@ -715,7 +715,7 @@ def _translate_uncached(
                         f"[TRANSLATION] Text detected as {detected.lang} (confidence: {confidence:.1%}), "
                         f"will translate to {target_language}"
                     )
-        except (ImportError, LangDetectException) as e:
+        except ImportError as e:
             # If langdetect fails or is not installed, proceed with translation
             logger.warning(f"Language detection failed: {e}, proceeding with translation")
         except Exception as e:
@@ -1521,7 +1521,7 @@ Translation ({target_lang_name} in <MESSAGE> tags):"""
 
             # Post-check: ensure translated output matches target language (best-effort).
             try:
-                from langdetect import detect_langs, LangDetectException
+                from langdetect import detect_langs
                 if target_language and len(translated) > 80:
                     detected_langs = detect_langs(translated[:1000])
                     if detected_langs:
@@ -1570,7 +1570,7 @@ Translation ({target_lang_name} in <MESSAGE> tags):"""
                                         )
                                 else:
                                     translated = translated_retry
-            except (ImportError, LangDetectException) as detect_err:
+            except ImportError as detect_err:
                 logger.warning(f"[_translate] Output language detection skipped: {detect_err}")
             except Exception as detect_err:
                 logger.warning(f"[_translate] Output language detection failed: {detect_err}")

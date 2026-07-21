@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime
 import inspect
 from typing import Any, Optional
@@ -403,7 +404,21 @@ class _PlatformMCPServer:
             transport_messages_path=self.jsonrpc_path,
             capabilities_override={"tools": {}},
         )
-        app.add_event_handler("shutdown", self.close)
+        # FastAPI 0.139 removed the deprecated add_event_handler/on_event API.
+        # Preserve the platform app's existing lifespan and extend its shutdown
+        # phase so the shared HTTP client is always closed in standalone MCP
+        # deployments as well as in the unified process.
+        platform_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def _mcp_lifespan(application: FastAPI):
+            async with platform_lifespan(application) as state:
+                try:
+                    yield state
+                finally:
+                    await self.close()
+
+        app.router.lifespan_context = _mcp_lifespan
         return app
 
     async def _tool_send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:

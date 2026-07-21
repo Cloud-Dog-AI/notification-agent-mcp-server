@@ -49,7 +49,7 @@ from src.core.cache_integration import (
     run_sync,
 )
 from src.core.prompts.prompt_manager import PromptManager
-from src.core.llm.runtime_client import LLMManager
+from src.core.llm.runtime_client import LLMManager, NotificationStructuredOutputError
 from src.core.users.user_manager import UserManager
 from src.core.groups.group_manager import GroupManager
 from src.core.formatters.format_converter import FormatConverter
@@ -688,6 +688,49 @@ class LLMFormatter:
                                 formatted_text = self._truncate_to_max_length(formatted_text, max_length)
 
                         ctx_logger.info(f"LLM formatting completed: {len(formatted_text)} chars (max: {max_length if max_length else 'none'})")
+
+                        # W28E-1887: CONTENT-PRESERVATION GUARD.
+                        #
+                        # Formatting must not become rewriting. A weak, wrong or junk prompt
+                        # makes the model answer the PROMPT instead of formatting the CONTENT,
+                        # and the result is shipped as if it were the notification. Observed on
+                        # preprod: an enabled prompt literally named "x" with prompt_text "hi"
+                        # was the default for English email, so a 3-table intelligence brief was
+                        # delivered as "Please find the following information below. Key terms:
+                        # summarize." — the brief was gone, and every existing test still passed
+                        # because they assert transport state, not content retention.
+                        #
+                        # Deliberately narrow: it only fires when NO summarisation/truncation was
+                        # requested (that is legitimate shrinking), and only for substantive
+                        # source content. On breach we fall back to the deterministic formatter
+                        # over the ORIGINAL content — the same path already used when the LLM
+                        # errors — so the reader gets the real brief, plainly formatted, rather
+                        # than confident filler.
+                        # Translation is excluded, not just summarisation. Translated output
+                        # legitimately shares almost no vocabulary with the source and can
+                        # change length substantially, so neither heuristic can judge it.
+                        # UT1.10 (group personalisation, translation_applied=True) proved this
+                        # the hard way: the guard fired "output_retained_only_14%_of_source" on
+                        # a correctly translated result. A source-language check is the wrong
+                        # tool for cross-language output; content preservation across a
+                        # translation needs its own semantic check, not a size/word-overlap one.
+                        _guard_target_lang = str(target_language or "").strip().lower()
+                        _is_translating = bool(_guard_target_lang) and _guard_target_lang != "en"
+                        if not summary_result and not max_length and not _is_translating:
+                            loss = self._formatting_lost_content(original_content_text, formatted_text)
+                            if loss:
+                                ctx_logger.error(
+                                    "LLM formatting discarded the source content",
+                                    extra={
+                                        "reason": loss,
+                                        "prompt_used": (prompt.get("name") if prompt else None),
+                                        "source_chars": len(original_content_text or ""),
+                                        "output_chars": len(formatted_text or ""),
+                                    },
+                                )
+                                raise NotificationStructuredOutputError(
+                                    f"LLM formatting violated content preservation: {loss}"
+                                )
                     except Exception as llm_error:
                         # LLM call failed or timed out - use fallback
                         ctx_logger.warning(f"LLM formatting failed/timed out: {llm_error}, raising strict error")
@@ -696,27 +739,13 @@ class LLMFormatter:
                     # LLM not initialized, use fallback
                     raise Exception("LLM not initialized")
             except Exception as e:
-                logger.warning(f"⚠️ LLM formatting failed: {e}, raising strict error")
-                # If we already created a summary, use it; otherwise format fallback
+                logger.warning("LLM formatting failed; returning an explicit error")
+                # A previously validated summary is a real service result. Without
+                # one, never disguise provider/schema failure as deterministic output.
                 if summary_result:
                     formatted_text = summary_result["summary_text"]
                 else:
-                    formatted_text = self._format_fallback(content, restrictions, user_prefs, prompt.get("name") if prompt else None)
-                    # Check if fallback result is still too long
-                    if max_length and len(formatted_text) > max_length:
-                        # Create summary from fallback (ALWAYS with link)
-                        # Pass target language so summary can be generated in the correct language
-                        target_language_for_summary = user_language or group_language
-                        summary_result = self._create_summary_with_link(
-                            content=formatted_text,
-                            max_length=max_length,
-                            channel_type=channel_type,
-                            user_prefs=user_prefs,
-                            target_language=target_language_for_summary,  # Generate summary in target language
-                            message_id=msg_id,
-                            message_guid=msg_guid,
-                        )
-                        formatted_text = summary_result["summary_text"]
+                    raise NotificationStructuredOutputError("LLM formatting failed") from e
 
         # Guard: if no max_length is set and the formatted output is empty or too short,
         # fall back to formatting the full content to avoid empty/near-empty outputs.
@@ -724,12 +753,12 @@ class LLMFormatter:
             formatted_len = len(formatted_text.strip()) if formatted_text else 0
             min_expected_len = max(200, int(original_content_length * 0.3)) if original_content_length > 1000 else 50
             if formatted_len < min_expected_len:
-                logger.warning(
+                logger.error(
                     f"[FORMAT GUARD] Output too short for full-content request "
                     f"(formatted_len={formatted_len}, min_expected_len={min_expected_len}, original_len={original_content_length}). "
-                    f"Using fallback formatting."
+                    f"Rejecting the invalid result."
                 )
-                formatted_text = self._format_fallback(content, restrictions, user_prefs, prompt.get("name") if prompt else None)
+                raise NotificationStructuredOutputError("LLM formatted output was too short")
 
         # 9. Extract subject and intro from formatted text (if LLM generated them) BEFORE translation
         subject, intro, body_text = self._extract_subject_intro_body(formatted_text, variables or {})
@@ -783,12 +812,12 @@ class LLMFormatter:
             formatted_len = len(formatted_text.strip()) if formatted_text else 0
             min_expected_len = max(200, int(original_content_length * 0.3)) if original_content_length > 1000 else 50
             if formatted_len < min_expected_len:
-                logger.warning(
+                logger.error(
                     f"[TRANSLATION GUARD] Output too short for full-content translation "
                     f"(formatted_len={formatted_len}, min_expected_len={min_expected_len}, original_len={original_content_length}). "
-                    f"Restoring original content before translation."
+                    f"Rejecting the invalid result."
                 )
-                formatted_text = original_content_text
+                raise NotificationStructuredOutputError("LLM translated output was too short")
 
         # Collapse guard: if the LLM formatting collapsed the content to near-nothing (e.g. a refusal/
         # meta-comment such as "This content does not start with a greeting") and NO summary was
@@ -797,11 +826,11 @@ class LLMFormatter:
         if (not summary_result) and original_content_length > 500:
             _collapse_len = len(formatted_text.strip()) if formatted_text else 0
             if _collapse_len < min(120, int(original_content_length * 0.15)):
-                logger.warning(
+                logger.error(
                     f"[FORMAT COLLAPSE GUARD] Formatted output collapsed "
-                    f"(len={_collapse_len} vs original_len={original_content_length}); restoring original content."
+                    f"(len={_collapse_len} vs original_len={original_content_length}); rejecting it."
                 )
-                formatted_text = original_content_text
+                raise NotificationStructuredOutputError("LLM formatted output collapsed")
 
         # 11. Translate if needed (ALWAYS translate if target language is not English)
         if variables:
@@ -1188,6 +1217,7 @@ from .prompt_renderer import (
     _extract_subject_intro_body,
     _build_content_blocks,
     _restore_numbered_lists,
+    _formatting_lost_content,
     _markdown_to_html,
     _markdown_to_text,
 )
@@ -1245,6 +1275,7 @@ _LLM_FORMATTER_METHODS = {
     "_extract_subject_intro_body": _extract_subject_intro_body,
     "_build_content_blocks": _build_content_blocks,
     "_restore_numbered_lists": _restore_numbered_lists,
+    "_formatting_lost_content": _formatting_lost_content,
     "_markdown_to_html": _markdown_to_html,
     "_markdown_to_text": _markdown_to_text,
     "_summary_needs_target_translation": _summary_needs_target_translation,

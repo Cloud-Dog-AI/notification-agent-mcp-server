@@ -4,10 +4,26 @@
 from fastapi import APIRouter
 from . import api_server as _api
 from ...core.inline_images import normalise_inline_images
+from ...core.security.redaction import redact_webhook_secrets
+from ...core.delivery_submission_guard import (
+    SUBJECT_BEARING_CHANNEL_TYPES as _SUBJECT_BEARING_CHANNEL_TYPES,
+    find_unresolved_placeholder as _find_unresolved_placeholder,
+)
 
 globals().update({name: value for name, value in vars(_api).items() if not name.startswith("__")})
 router = APIRouter()
 
+# W28E-1885 D-024: webhook capability URLs must never leave the service. The helper lives
+# in src/core/security/redaction.py so it stays dependency-free and unit-testable without
+# the API server, database or runtime config.
+
+# W28E-1885 D-002b: an outbound guard for unsubstituted template placeholders. The audit found
+# a subject delivered verbatim as "... {run_date}" because the upstream producer never
+# substituted it and this service accepted and completed it anyway. Reject at submission so a
+# broken template fails loud (422) instead of reaching a reader. The three forms are template
+# signatures — a brace-wrapped lowercase identifier ({run_date}), a shell/JS template literal
+# start (${), and a Jinja/Handlebars opener ({{) — chosen to match the audit's acceptance
+# regex while staying clear of ordinary prose.
 class ContentBlock(BaseModel):
     """Content block in a message"""
     type: str = Field(..., description="Content type (text, markdown, html, binary, image, audio, video)")
@@ -281,6 +297,7 @@ async def create_message(request: MessageRequest, http_request: Request):
     # Resolve channel names to IDs and expand groups
     loop = asyncio.get_event_loop()
     destinations_with_ids = []
+    resolved_channel_types = set()  # D-003: channel types targeted by this submission
     for dest in request.destinations:
         channel_name = dest.channel
         address = dest.address
@@ -309,6 +326,19 @@ async def create_message(request: MessageRequest, http_request: Request):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Not authorised to send via channel '{channel['name']}'",
             )
+
+        resolved_channel_types.add(str(channel.get("type") or "").strip().lower())
+
+        # A channel-based adapter resolves its endpoint from protected channel
+        # configuration at send time.  Its persisted delivery destination is
+        # therefore always the public channel name, never an incoming-webhook
+        # capability supplied by a caller.
+        try:
+            channel_config = json.loads(channel.get("config_json") or "{}")
+        except (TypeError, ValueError):
+            channel_config = {}
+        if channel_config.get("is_channel_based"):
+            address = str(channel.get("name") or channel_name)
 
         # Validate email destination format using resolved channel type so
         # named email channels are validated (not only the configured default name).
@@ -443,6 +473,37 @@ async def create_message(request: MessageRequest, http_request: Request):
         ttl_hours = request.options.get("ttl_hours")
         subject = request.options.get("subject")
 
+    # W28E-1885 D-002b: reject unsubstituted template placeholders in the subject or any content
+    # body BEFORE the message is queued. A producer that forgot to substitute {run_date} must
+    # get a loud 422, not have the literal placeholder delivered and the message marked
+    # completed. Scanning here covers every producer (API and MCP both submit through this
+    # endpoint). The offending token is echoed back so the caller can see what to fix.
+    _placeholder_scan = [("subject", subject)] + [
+        (f"content[{idx}].body", getattr(block, "body", None))
+        for idx, block in enumerate(request.content)
+    ]
+    for _field, _value in _placeholder_scan:
+        _hit = _find_unresolved_placeholder(_value)
+        if _hit:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{_field} contains an unresolved template placeholder '{_hit}'. "
+                    "Substitute template variables before submitting, or escape the literal "
+                    "brace/dollar syntax if it is intended content."
+                ),
+            )
+
+    # W28E-1885 D-003: subject-bearing channels require an explicit subject.
+    # A synthetic "(no subject)" value conceals a producer fault and still
+    # creates a completed email with a meaningless subject; reject it before
+    # the message or any delivery is persisted.
+    if not subject and resolved_channel_types & _SUBJECT_BEARING_CHANNEL_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="subject is required for email and SMTP deliveries",
+        )
+
     # Merge subject, language, and explicit_prompt into variables if provided
     message_variables = request.variables.copy() if request.variables else {}
     # W28A-322: Pass explicit language into message variables so delivery worker
@@ -458,9 +519,17 @@ async def create_message(request: MessageRequest, http_request: Request):
     if explicit_prompt_name:
         # Store explicit prompt in variables so it can be passed through to LLM formatter
         message_variables["_explicit_prompt"] = explicit_prompt_name
-        logger.critical(f"[API] Stored _explicit_prompt in message_variables: {message_variables}")
+        logger.debug("[API] stored _explicit_prompt in message_variables", extra={"prompt": explicit_prompt_name})
 
-    logger.critical(f"[API] Final message_variables before enqueue: {message_variables}, bool={bool(message_variables)}")
+    # Log level and payload discipline (W28E-1885): these two lines were logger.critical and
+    # dumped the whole message_variables dict — which carries subject and preferences — on
+    # EVERY enqueue. That made a routine debug trace look like a service incident and put
+    # message content into CRITICAL logs (same class as the W28A-957 file-adapter payload
+    # dumps). Emit at debug, and record only the non-secret shape rather than the values.
+    logger.debug(
+        "[API] message_variables prepared for enqueue",
+        extra={"keys": sorted(message_variables.keys()), "count": len(message_variables)},
+    )
 
     # Enqueue message (job_manager.enqueue_message is blocking, wrap it)
     # Note: loop is already defined earlier in the function
@@ -489,6 +558,11 @@ async def create_message(request: MessageRequest, http_request: Request):
         variables=message_variables if message_variables else None,
         idempotency_key=request.idempotency_key,
         ttl_hours=ttl_hours,
+        # W28E-1885 D-019: record the LLM profile that will drive formatting when the caller
+        # directs one, so llm_profile is populated for LLM-formatted messages instead of always
+        # NULL. The per-delivery prompt actually used is additionally recorded on the delivery's
+        # metadata_json (prompt_used) by the worker.
+        llm_profile=explicit_prompt_name,
         request_source=_req_source,
         request_ip=_req_ip,
         request_auth_method=_req_auth,
@@ -1427,6 +1501,11 @@ async def get_message(
             "subject": subject or None,
             "status": actual_status,
             "created_at": message.get('created_at'),
+            # W28E-1885 D-011/D-019: expose the message metadata fields so the API contract is
+            # honest — template_ref is populated when a template drives the message, llm_profile
+            # when the caller directs an LLM prompt profile. Both are null otherwise, by contract.
+            "template_ref": message.get('template_ref'),
+            "llm_profile": message.get('llm_profile'),
             # Backward compatibility: older AT/IT paths expect `content`,
             # while newer paths use `content_json`.
             "content": content,
@@ -1531,6 +1610,71 @@ async def get_message(
             if hasattr(value, "strftime"):
                 return value.strftime("%Y-%m-%d %H:%M:%S")
             return str(value)[:19]
+
+        # W28E-1885 D-021: an anonymous reader following the emailed capability URL must not see
+        # internal delivery metadata. The middleware flags such requests (no X-API-Key; the
+        # bootstrap key was injected). Authenticated operators (whose UI proxies with X-API-Key)
+        # still get the full diagnostic view.
+        is_public_link = bool(getattr(request.state, "public_link_access", False))
+
+        if is_public_link:
+            # Reader view: only non-sensitive header fields; no internal id or delivery metadata.
+            _meta_items = [
+                ("Status", actual_status),
+                ("Created", _format_dt(message.get('created_at'))),
+            ]
+        else:
+            _meta_items = [
+                ("Message ID", message_id),
+                ("GUID", message_guid or 'N/A'),
+                ("Status", actual_status),
+                ("Created", _format_dt(message.get('created_at'))),
+                ("Sent At", _format_dt(delivery_info.get('sent_at') if delivery_info else None)),
+                ("Delivered At", _format_dt(delivery_info.get('delivered_at') if delivery_info else None)),
+            ]
+        meta_grid_html = "\n".join(
+            f'<div class="meta-item"><div class="meta-label">{_label}</div>'
+            f'<div class="meta-value">{_value}</div></div>'
+            for _label, _value in _meta_items
+        )
+
+        if is_public_link:
+            # D-021: the Original Message (raw submission), Original Settings (internal variables)
+            # and Destination (recipient address + delivery state) sections, and the diagnostic
+            # format links, are all suppressed for the anonymous reader.
+            internal_sections_html = ""
+            links_section_html = ""
+        else:
+            internal_sections_html = f"""
+        <div class="section">
+            <h2>📝 Original Message</h2>
+            <p><em>Original content as submitted:</em></p>
+            <div class="original-content">{original_content_text.strip()}</div>
+        </div>
+
+        <div class="section">
+            <h2>⚙️ Original Settings</h2>
+            <p><em>Variables and options used when creating this message:</em></p>
+            <div class="settings">{variables_display}</div>
+        </div>
+
+        <div class="section">
+            <h2>📍 Destination</h2>
+            <p><strong>Destination:</strong> {destination or 'N/A'}</p>
+            <p><strong>Total Deliveries:</strong> {total_deliveries}</p>
+            <p><strong>Delivery States:</strong> {', '.join([f"{k}: {v}" for k, v in state_counts.items()])}</p>
+        </div>"""
+            links_section_html = f"""
+        <div class="section">
+            <h2>🔗 Links</h2>
+            <div class="links">
+                <a href="/messages/{message_identifier}?format=json" target="_blank">View as JSON</a>
+                <a href="/messages/{message_identifier}?format=html" target="_blank">View as HTML</a>
+                <a href="/messages/{message_identifier}?format=markdown" target="_blank">View as Markdown</a>
+                <a href="/messages/{message_identifier}?format=text" target="_blank">View as Text</a>
+                {delivery_links}
+            </div>
+        </div>"""
 
         # Generate HTML page with all information
         html_content = f"""<!DOCTYPE html>
@@ -1660,6 +1804,29 @@ async def get_message(
             margin-top: 5px;
             color: #333;
         }}
+        /* W28E-1885 D-022: responsive containment so the page never overflows a mobile
+           viewport. Wide content (tables, preformatted blocks, images) scrolls inside its own
+           box instead of forcing the page body to scroll horizontally. */
+        * {{ box-sizing: border-box; }}
+        img {{ max-width: 100%; height: auto; }}
+        .message-content {{ overflow-x: auto; }}
+        .message-content table {{
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: auto;
+            border-collapse: collapse;
+        }}
+        .message-content pre {{
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+        @media (max-width: 480px) {{
+            body {{ padding: 10px; }}
+            .container {{ padding: 16px; }}
+            .section {{ padding: 12px; }}
+        }}
     </style>
 </head>
 <body>
@@ -1667,30 +1834,7 @@ async def get_message(
         <div class="header">
             <h1>{subject or 'Message'}</h1>
             <div class="meta">
-                <div class="meta-item">
-                    <div class="meta-label">Message ID</div>
-                    <div class="meta-value">{message_id}</div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">GUID</div>
-                    <div class="meta-value"><code>{message_guid or 'N/A'}</code></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Status</div>
-                    <div class="meta-value">{actual_status}</div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Created</div>
-                    <div class="meta-value">{_format_dt(message.get('created_at'))}</div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Sent At</div>
-                    <div class="meta-value">{_format_dt(delivery_info.get('sent_at') if delivery_info else None)}</div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Delivered At</div>
-                    <div class="meta-value">{_format_dt(delivery_info.get('delivered_at') if delivery_info else None)}</div>
-                </div>
+                {meta_grid_html}
             </div>
         </div>
 
@@ -1700,36 +1844,8 @@ async def get_message(
                 {formatted_body}
             </div>
         </div>
-
-        <div class="section">
-            <h2>📝 Original Message</h2>
-            <p><em>Original content as submitted:</em></p>
-            <div class="original-content">{original_content_text.strip()}</div>
-        </div>
-
-        <div class="section">
-            <h2>⚙️ Original Settings</h2>
-            <p><em>Variables and options used when creating this message:</em></p>
-            <div class="settings">{variables_display}</div>
-        </div>
-
-        <div class="section">
-            <h2>📍 Destination</h2>
-            <p><strong>Destination:</strong> {destination or 'N/A'}</p>
-            <p><strong>Total Deliveries:</strong> {total_deliveries}</p>
-            <p><strong>Delivery States:</strong> {', '.join([f"{k}: {v}" for k, v in state_counts.items()])}</p>
-        </div>
-
-        <div class="section">
-            <h2>🔗 Links</h2>
-            <div class="links">
-                <a href="/messages/{message_identifier}?format=json" target="_blank">View as JSON</a>
-                <a href="/messages/{message_identifier}?format=html" target="_blank">View as HTML</a>
-                <a href="/messages/{message_identifier}?format=markdown" target="_blank">View as Markdown</a>
-                <a href="/messages/{message_identifier}?format=text" target="_blank">View as Text</a>
-                {delivery_links}
-            </div>
-        </div>
+        {internal_sections_html}
+        {links_section_html}
     </div>
 </body>
 </html>"""
@@ -1790,7 +1906,8 @@ async def get_message_deliveries(message_identifier: str, offset: int = 0, limit
             "total": total,
             "offset": offset,
             "limit": limit,
-            "items": paginated,
+            # W28E-1885 D-024: strip webhook capability URLs before they leave the service.
+            "items": redact_webhook_secrets(paginated),
         }
     except asyncio.TimeoutError:
         logger.error(f"Timeout getting deliveries for message {message_identifier}")
@@ -2080,7 +2197,14 @@ async def resend_delivery(delivery_id: int):
         )
 
     # Reset delivery to queued and clear retry backoff metadata.
-    await loop.run_in_executor(None, delivery_repo.update_state, delivery_id, DeliveryState.QUEUED.value)
+    await loop.run_in_executor(
+        None,
+        lambda: delivery_repo.update_state(
+            delivery_id,
+            DeliveryState.QUEUED.value,
+            allow_cancelled_override=True,
+        ),
+    )
     await loop.run_in_executor(
         None,
         lambda: db.execute(
@@ -2097,10 +2221,40 @@ async def resend_delivery(delivery_id: int):
     )
     await loop.run_in_executor(None, db.commit)
 
+    # A resend must revive both sides of the durable contract. Resetting only
+    # the delivery row leaves the corresponding cloud_dog_jobs record terminal,
+    # so the worker correctly refuses to claim it and the delivery stays queued
+    # forever. Requeue an existing job, or recreate it if retention removed it.
+    from ...core.jobs import get_jobs_runtime
+
+    runtime = get_jobs_runtime()
+    existing_job = await loop.run_in_executor(None, runtime.get_delivery_job, delivery_id)
+    if existing_job is not None:
+        job_requeued = await loop.run_in_executor(None, runtime.retry_delivery_job, delivery_id)
+    else:
+        await loop.run_in_executor(
+            None,
+            lambda: runtime.enqueue_delivery_job(
+                delivery_id=delivery_id,
+                message_id=int(delivery["message_id"]),
+                channel_id=int(delivery["channel_id"]),
+                destination=str(delivery["destination"]),
+                request_source="delivery_resend",
+            ),
+        )
+        job_requeued = True
+
+    if not job_requeued:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Delivery row reset but durable job could not be requeued",
+        )
+
     return {
         "delivery_id": delivery_id,
         "previous_state": current_state,
         "new_state": "queued",
+        "job_requeued": True,
         "message": "Delivery queued for resend",
     }
 

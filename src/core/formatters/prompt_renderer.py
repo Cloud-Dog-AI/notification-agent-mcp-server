@@ -38,6 +38,8 @@ import re
 import time
 from typing import Optional, Dict, Any, List
 
+import markdown
+
 from src.core.cache_integration import (
     build_context_hash,
     build_model_config_hash,
@@ -199,7 +201,7 @@ def _invoke_formatting_prompt(
             model_config_hash=self._cache_model_config_hash(),
             prompt_hash=build_prompt_hash(prompt_text),
             format_fn=lambda: str(
-                self.llm_manager.invoke(
+                self.llm_manager.invoke_structured(
                     prompt_text,
                     timeout=timeout_seconds,
                     params=invoke_params,
@@ -311,9 +313,25 @@ def _select_prompt(
             channel_type=channel_type,
             language=user_language,
         )
+        # STRICT: find_best_match() falls back to a language-NULL prompt (the channel
+        # default) when no language-specific prompt exists, because its match clause is
+        # "(language = ? OR language IS NULL)". Accepting that fallback here would let
+        # the generic channel-default win at Priority #3 and short-circuit the more
+        # specific Priority #4 group-keyword / #5 group-language stages below (this is
+        # exactly what starved AT1.6E2). Only treat this as a genuine user-language
+        # prompt when the returned row actually carries the requested language — mirror
+        # the guard already applied to the Priority #5 group-language stage.
         if prompt:
-            logger.debug(f"Using user language prompt: {user_language}")
-            return prompt
+            returned_language = str(prompt.get("language") or "").strip().lower()
+            expected_language = str(user_language or "").strip().lower()
+            if returned_language and returned_language == expected_language:
+                logger.debug(f"Using user language prompt: {user_language}")
+                return prompt
+            logger.debug(
+                "Ignoring non-language-specific prompt during user language lookup "
+                f"(language={user_language}, returned_language={prompt.get('language')}, "
+                f"prompt={prompt.get('name')}) — deferring to group/default stages"
+            )
 
     # Priority 4: Group keyword-specific
     if group_id and group_keywords:
@@ -1279,6 +1297,69 @@ def _build_content_blocks(
 
     return blocks
 
+#: Below this many characters the source is a short notice, where a large size change is
+#: normal formatting rather than content loss.
+_CONTENT_GUARD_MIN_SOURCE_CHARS = 200
+
+#: An output smaller than this fraction of the source, when no summary was requested, means
+#: the model answered the prompt instead of formatting the content. 0.30 is deliberately
+#: forgiving: real reformatting (markdown -> prose) can legitimately shed markup, but it does
+#: not shed two thirds of the document. The observed failure shipped ~2% of the source.
+_CONTENT_GUARD_MIN_RETENTION = 0.30
+
+#: How much of the source's distinctive vocabulary must survive. Catches the case where the
+#: model returns fluent filler of a plausible LENGTH but about nothing in the source.
+_CONTENT_GUARD_MIN_TOKEN_OVERLAP = 0.20
+
+_CONTENT_GUARD_STOPWORDS = frozenset("""
+a an and are as at be by for from has have in is it its of on or that the this to was were
+with will would can could should may might must not no you your we our they their he she
+""".split())
+
+
+def _content_signature_tokens(text: str) -> set:
+    """Distinctive lowercase word/number tokens in ``text``.
+
+    Stopwords are dropped so the overlap measure reflects subject matter rather than
+    grammar: "Please find the following information below" shares stopwords with almost any
+    document, but shares no SpaceX/Blue Origin/valuation tokens with a financial brief.
+    """
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]{2,}", (text or "").lower())
+    return {w for w in words if w not in _CONTENT_GUARD_STOPWORDS}
+
+
+def _formatting_lost_content(self, source_text: str, formatted_text: str) -> Optional[str]:
+    """Did formatting discard the source content? Returns a reason, or None if fine.
+
+    Formatting is allowed to restructure, restyle, translate and re-order. It is NOT allowed
+    to throw the document away and answer the prompt instead — which is exactly what a junk
+    or weak prompt causes (W28E-1887; see the guard's call site in llm_formatter).
+
+    Only called when no summarisation/truncation was requested, so any large loss here is
+    unintended. Returns None for short sources, where size ratios are meaningless.
+    """
+    source = (source_text or "").strip()
+    output = (formatted_text or "").strip()
+
+    if len(source) < _CONTENT_GUARD_MIN_SOURCE_CHARS:
+        return None
+
+    if not output:
+        return "empty_output"
+
+    retention = len(output) / len(source)
+    if retention < _CONTENT_GUARD_MIN_RETENTION:
+        return f"output_retained_only_{retention:.0%}_of_source"
+
+    source_tokens = _content_signature_tokens(source)
+    if source_tokens:
+        overlap = len(source_tokens & _content_signature_tokens(output)) / len(source_tokens)
+        if overlap < _CONTENT_GUARD_MIN_TOKEN_OVERLAP:
+            return f"output_shares_only_{overlap:.0%}_of_source_vocabulary"
+
+    return None
+
+
 def _restore_numbered_lists(self, text: str) -> str:
     """
     Post-process translated text to restore numbered lists that may have been lost.
@@ -1352,10 +1433,16 @@ def _restore_numbered_lists(self, text: str) -> str:
                         else:
                             break
 
-                # If we found at least 2 items, convert to numbered list
+                # If we found at least 2 items, restore the list in its OWN form.
+                # list_type must decide the marker: a bullet run stays a bullet run.
+                # Emitting "{num}." unconditionally silently renumbered every bulleted
+                # list into an ordered one (W28E-1885 D-007).
                 if len(potential_list) >= 2:
                     for num, content in potential_list:
-                        output_lines.append(f"{num}. {content}")
+                        if list_type == 'bullet':
+                            output_lines.append(f"- {content}")
+                        else:
+                            output_lines.append(f"{num}. {content}")
                     i = j
                     matched = True
                     break
@@ -1367,10 +1454,50 @@ def _restore_numbered_lists(self, text: str) -> str:
     return '\n'.join(output_lines)
 
 def _markdown_to_html(self, text: str) -> str:
-    """Convert markdown to HTML - handles markdown inside HTML tags"""
+    """Convert markdown to HTML.
+
+    Uses the Python-Markdown library (a declared dependency, see requirements.txt), whose
+    ``extra`` bundle provides the pipe-table, definition-list and md-in-html support this
+    service needs. The PDF path already renders through the same library; routing the
+    email/HTML path through it too means one markdown dialect across every output format.
+
+    Before W28E-1885 this function was a hand-rolled regex converter with no table branch:
+    any line it did not recognise fell through to a paragraph wrapper, so a markdown table
+    was delivered to readers as literal ``<p>| a | b |</p>`` pipe rows (D-001), unordered
+    bullets were renumbered (D-007) and some ``**bold**`` survived unconverted (D-009).
+
+    ``nl2br`` preserves the single-newline line breaks that LLM output relies on; without it
+    a two-line address block would collapse onto one line. ``sane_lists`` stops an ordered
+    list from absorbing an adjacent unordered one.
+    """
     # CRITICAL: Post-process to fix lost numbered lists from translation
     text = self._restore_numbered_lists(text)
 
+    try:
+        html = markdown.markdown(
+            text,
+            extensions=['extra', 'nl2br', 'sane_lists'],
+            output_format='html',
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        # Never fail a delivery because of a formatting edge case: fall back to the
+        # legacy regex conversion, which is lossy but always terminates.
+        logger.warning(
+            "markdown conversion failed; falling back to legacy regex converter",
+            extra={"error": str(exc)},
+        )
+        return _legacy_markdown_to_html(self, text)
+
+    return html
+
+
+def _legacy_markdown_to_html(self, text: str) -> str:
+    """Pre-W28E-1885 hand-rolled converter, retained only as a defensive fallback.
+
+    Do NOT extend this. It has no table support and mis-renders lists; it exists so that an
+    unexpected Python-Markdown failure degrades to the old behaviour instead of dropping a
+    delivery. See _markdown_to_html.
+    """
     # re is already imported at module level
     # First, convert markdown that's inside HTML tags
     # Pattern: <tag>markdown content</tag> -> <tag>converted HTML</tag>
@@ -1582,6 +1709,8 @@ __all__ = [
     "_extract_subject_intro_body",
     "_build_content_blocks",
     "_restore_numbered_lists",
+    "_formatting_lost_content",
+    "_content_signature_tokens",
     "_markdown_to_html",
     "_markdown_to_text",
 ]
