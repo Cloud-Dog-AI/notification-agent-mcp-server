@@ -132,7 +132,7 @@ def normalise_flat_role(role: str | None) -> str:
 def build_flat_rbac_engine() -> RBACEngine:
     """Return the ONE shared RBACEngine loaded with the flat role catalog."""
     return RBACEngine(
-        role_permissions={name: set(perms) for name, perms in FLAT_ROLE_PERMISSIONS.items()}
+        role_overlay={name: set(perms) for name, perms in FLAT_ROLE_PERMISSIONS.items()}
     )
 
 

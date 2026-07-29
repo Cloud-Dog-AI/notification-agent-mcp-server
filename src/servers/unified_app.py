@@ -33,6 +33,7 @@ from starlette.routing import Route
 
 from ..config import get_config
 from .api.api_server import app
+from .api.public_link import is_public_message_read_path
 from .a2a import a2a_server as _a2a_server
 from .mcp.mcp_server_http import MCPServerJSONRPC
 from .web import web_server as _web_server
@@ -103,8 +104,6 @@ def _needs_unified_auth_bridge(path: str) -> bool:
         "/a2a/health",
         "/a2a/ready",
         "/a2a/live",
-        "/a2a/.well-known/agent.json",
-        "/.well-known/agent.json",
     }:
         return True
     if path == "/groups/add":
@@ -123,7 +122,7 @@ def _needs_unified_auth_bridge(path: str) -> bool:
     # Health/discovery endpoints (e.g. /mcp/health, /a2a/health) are handled
     # above and still receive the bridge key.  Execution paths must carry a
     # real caller-supplied API key so AuthContextMiddleware enforces PS-70 UM1.
-    if _path_starts(path, ("/mcp", "/a2a", "/sse", "/message")):
+    if _path_starts(path, ("/mcp", "/a2a", "/sse", "/message", "/.well-known")):
         return False
     if _path_starts(path, ("/jobs",)):
         return True
@@ -224,6 +223,22 @@ async def _unified_auth_bridge(request: Request, call_next):
     """Let mounted Web/A2A public routes pass the API auth middleware."""
     await _ensure_unified_surfaces_started()
     path = request.url.path or ""
+    is_public_message_get = (
+        request.method.upper() == "GET"
+        and is_public_message_read_path(
+            path,
+            str(_cfg.get("api_server.base_path") or "/api/v1"),
+        )
+    )
+    if _path_starts(
+        path,
+        ("/mcp", "/messages", "/sse", "/message", "/a2a", "/.well-known"),
+    ) and not is_public_message_get:
+        if _request_is_anonymous(request):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+            )
     # WebUI page-alias redirects are for browser navigation only. An API client
     # (identified by x-api-key, mirroring _is_legacy_web_page_request) must NOT be
     # 308-redirected: otherwise a real API endpoint that shares a path with a WebUI
@@ -502,11 +517,19 @@ _copy_mcp_routes()
 
 
 @app.get("/.well-known/agent.json")
-async def root_agent_card():
-    """Serve the A2A agent card at the top-level well-known path."""
+async def root_agent_card(request: Request):
+    """Serve the authenticated A2A agent card at the top-level path."""
     a2a_base = str(_cfg.get("a2a_server.base_url") or "http://127.0.0.1:8020/a2a").rstrip("/")
+    headers = {
+        name: value
+        for name, value in (
+            ("x-api-key", request.headers.get("x-api-key")),
+            ("authorization", request.headers.get("authorization")),
+        )
+        if value
+    }
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(f"{a2a_base}/.well-known/agent.json")
+        resp = await client.get(f"{a2a_base}/.well-known/agent.json", headers=headers)
         return JSONResponse(content=resp.json(), status_code=resp.status_code)
 
 

@@ -57,6 +57,7 @@ from ...utils.logger import PlatformContextMiddleware, setup_logger, get_logger,
 from .routes.callbacks import router as callback_router
 from .routes.users import router as users_router
 from .routes.groups import router as groups_router
+from .public_link import is_public_message_read_path
 from cloud_dog_logging.middleware.fastapi import LoggingMiddleware
 from cloud_dog_api_kit import create_app as platform_create_app, create_health_router
 from cloud_dog_api_kit.lifecycle.hooks import LifecycleHooks
@@ -434,15 +435,14 @@ async def _inject_api_key_for_public_storage_links(request: Request, call_next):
         and path.startswith("/storage/")
         and not path.startswith("/storage/files/")
     )
-    # Public message links are only the top-level message read endpoint:
+    # Public message links are only the top-level message read endpoint under
+    # either the compatibility root or the configured API base path:
     #   /messages/{id-or-guid}
+    #   /api/v1/messages/{id-or-guid}
     # Do not inject for subroutes like /messages/{id}/deliveries.
-    message_suffix = path[len("/messages/"):] if path.startswith("/messages/") else ""
     is_public_message_get = (
         request.method.upper() == "GET"
-        and path.startswith("/messages/")
-        and bool(message_suffix)
-        and "/" not in message_suffix
+        and is_public_message_read_path(path, _api_base_path)
     )
     # W28E-1885 D-021: mark genuinely anonymous capability-URL access to a message read link.
     # An operator's authenticated UI proxies with an X-API-Key header, so the only requests that

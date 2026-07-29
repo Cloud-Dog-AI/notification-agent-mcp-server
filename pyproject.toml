@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "notification-agent-mcp-server"
-version = "0.1.5"
+version = "0.1.6"
 description = "Cloud-Dog notification backend with REST, MCP, A2A, and web admin interfaces"
 readme = "README.md"
 # W28R-3017: project-local Python 3.13 runtime contract (NF-005). The remediated
@@ -42,12 +42,12 @@ dependencies = [
   "python-dotenv==1.0.0",
   "pydantic>=2.7.4",
   "pydantic-settings>=2.1.0",
-  "cloud_dog_config==0.3.5",
+  "cloud_dog_config==0.3.6",
   "cloud_dog_logging==0.4.1",
   "cloud_dog_api_kit==0.14.1",
   "cloud_dog_idam==0.5.4",
   "cloud_dog_jobs==0.4.4",
-  "cloud_dog_llm==0.4.1",
+  "cloud_dog_llm==0.4.4",
   "cloud_dog_cache==0.2.3",
   "cloud_dog_storage==0.1.8",
   "cloud_dog_db==0.3.3",

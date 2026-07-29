@@ -558,7 +558,22 @@ async def notify_natural(request: Request, body: dict = None):
     
     if parsed.get("subject"):
         payload["options"]["subject"] = parsed["subject"]
-    
+    else:
+        # W28E-1889 R2 (AT1.14a/b): subject-bearing channels (smtp/email) reject a
+        # missing subject with 422 under the W28E-1885 D-003 guard. When the natural
+        # language parser yields no explicit subject, derive one from the first line
+        # of the reader-facing content so the guard's contract ("subject present,
+        # never null on a completed message") holds for every A2A natural send.
+        derived = ""
+        for block in payload["content"]:
+            body = str(block.get("body") or "").strip()
+            if body:
+                derived = body.splitlines()[0].strip()
+                break
+        if len(derived) > 78:
+            derived = derived[:75].rstrip() + "..."
+        payload["options"]["subject"] = derived or "Notification"
+
     # Send via API using shared long-lived client
     try:
         global _a2a_http_client

@@ -3,6 +3,7 @@
 
 from fastapi import APIRouter
 from . import api_server as _api
+from ...core.attachments import normalise_attachments
 from ...core.inline_images import normalise_inline_images
 from ...core.security.redaction import redact_webhook_secrets
 from ...core.delivery_submission_guard import (
@@ -60,6 +61,10 @@ class MessageRequest(BaseModel):
     inline_images: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Optional inline CID images; each item has content_id and exactly one of data, storage_path, or url",
+    )
+    attachments: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Optional explicit file attachments; binary entries use base64 content and optional sha256",
     )
     prompt_id: Optional[int] = Field(default=None, description="Explicit prompt ID (highest priority - FR1.15)")
     prompt_name: Optional[str] = Field(default=None, description="Explicit prompt name (highest priority - FR1.15)")
@@ -278,10 +283,15 @@ async def create_message(request: MessageRequest, http_request: Request):
 
     try:
         content_payloads = [block.dict() for block in request.content]
+        top_attachments = normalise_attachments(request.attachments)
+        if top_attachments and content_payloads and not content_payloads[0].get("attachments"):
+            content_payloads[0]["attachments"] = top_attachments
         top_inline_images = normalise_inline_images(request.inline_images)
         if top_inline_images and content_payloads and not content_payloads[0].get("inline_images"):
             content_payloads[0]["inline_images"] = top_inline_images
         for idx, block in enumerate(content_payloads):
+            if block.get("attachments") not in (None, ""):
+                block["attachments"] = normalise_attachments(block.get("attachments"))
             if block.get("inline_images") not in (None, ""):
                 block["inline_images"] = normalise_inline_images(block.get("inline_images"))
     except ValueError as exc:
@@ -472,6 +482,15 @@ async def create_message(request: MessageRequest, http_request: Request):
     if request.options:
         ttl_hours = request.options.get("ttl_hours")
         subject = request.options.get("subject")
+    # W28E-1889 R2: the subject may legitimately arrive via variables.subject
+    # (the W28A-322 producer pattern) rather than options.subject. Honour both
+    # before the D-003 guard so a producer that supplied a real subject is not
+    # rejected as subjectless. D-003's intent — rejecting GENUINELY absent
+    # subjects — is preserved: this only reads a subject the caller did provide.
+    if not subject and request.variables:
+        variables_subject = request.variables.get("subject")
+        if isinstance(variables_subject, str) and variables_subject.strip():
+            subject = variables_subject
 
     # W28E-1885 D-002b: reject unsubstituted template placeholders in the subject or any content
     # body BEFORE the message is queued. A producer that forgot to substitute {run_date} must

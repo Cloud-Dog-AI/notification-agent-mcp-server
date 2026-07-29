@@ -32,12 +32,12 @@ pyyaml==6.0.3
 python-dotenv==1.0.0
 pydantic>=2.7.4
 pydantic-settings>=2.1.0
-cloud_dog_config==0.3.5
+cloud_dog_config==0.3.6
 cloud_dog_logging==0.4.1
 cloud_dog_api_kit==0.14.1
 cloud_dog_idam==0.5.4
 cloud_dog_jobs==0.4.4
-cloud_dog_llm==0.4.1
+cloud_dog_llm==0.4.4
 cloud_dog_db==0.3.3
 cloud_dog_storage==0.1.8
 hvac>=2.4.0

@@ -32,6 +32,9 @@ Recent Changes (max 10):
 
 import ast
 import asyncio
+import base64
+import hashlib
+import io
 import time
 import html
 import json
@@ -51,6 +54,7 @@ from ..adapters.base import ErrorClass
 from ..utils.logger import get_logger, get_context_logger
 from ..config import get_config
 from ..core.security.redaction import redact_internal_identifiers_in_blocks
+from .attachments import normalise_attachments
 from .inline_images import resolve_inline_image_references
 from .jobs.runtime import get_jobs_runtime
 from concurrent.futures import ThreadPoolExecutor
@@ -128,6 +132,148 @@ def _pdf_filename_from_subject(message, fallback_id=None):
         mid = fallback_id or (message.get("id") if isinstance(message, dict) else None) or "message"
         base = f"notification_{mid}"
     return base + ".pdf"
+
+
+def _html_visible_tokens(value: str) -> List[str]:
+    """Return comparison-only visible HTML tokens without altering delivered content."""
+    value = re.sub(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>", " ", value or "")
+    value = html.unescape(re.sub(r"(?s)<[^>]+>", " ", value))
+    return re.findall(r"[A-Za-z0-9]+", value.casefold())
+
+
+def _validate_pdf_bytes_against_html(pdf_bytes: bytes, html_body: str) -> Dict[str, Any]:
+    """Fail closed when generated PDF bytes are malformed, thin, or not the HTML report."""
+    if not isinstance(pdf_bytes, bytes) or len(pdf_bytes) < 512:
+        raise ValueError("PRE_SEND_PDF_INVALID: generated PDF is absent or too small")
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise ValueError("PRE_SEND_PDF_INVALID: PDF header is missing")
+    if b"%%EOF" not in pdf_bytes[-4096:]:
+        raise ValueError("PRE_SEND_PDF_INVALID: PDF EOF marker is missing")
+
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf_bytes), strict=False)
+        page_count = len(reader.pages)
+        extracted = "\n".join((page.extract_text() or "") for page in reader.pages)
+        image_objects = sum(len(page.images) for page in reader.pages)
+    except Exception as exc:
+        raise ValueError(f"PRE_SEND_PDF_INVALID: parser readback failed: {exc}") from exc
+
+    if page_count < 1:
+        raise ValueError("PRE_SEND_PDF_INVALID: PDF has no pages")
+    html_tokens = _html_visible_tokens(html_body)
+    pdf_tokens = re.findall(r"[A-Za-z0-9]+", extracted.casefold())
+    if len(html_tokens) >= 40:
+        if len(pdf_tokens) < int(len(html_tokens) * 0.75):
+            raise ValueError(
+                "PRE_SEND_PDF_INVALID: extracted PDF text is materially shorter than final HTML"
+            )
+        html_vocabulary = set(html_tokens)
+        overlap = len(html_vocabulary.intersection(pdf_tokens)) / max(1, len(html_vocabulary))
+        if overlap < 0.70:
+            raise ValueError(
+                "PRE_SEND_PDF_INVALID: extracted PDF text does not reconcile with final HTML"
+            )
+    else:
+        overlap = 1.0 if pdf_tokens else 0.0
+
+    html_image_count = len(re.findall(r"(?i)<img\b", html_body or ""))
+    if html_image_count and image_objects < html_image_count:
+        raise ValueError(
+            "PRE_SEND_PDF_INVALID: rendered PDF image inventory is smaller than final HTML"
+        )
+    return {
+        "pdf_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+        "pdf_bytes": len(pdf_bytes),
+        "pdf_pages": page_count,
+        "pdf_text_tokens": len(pdf_tokens),
+        "html_text_tokens": len(html_tokens),
+        "html_vocabulary_overlap": round(overlap, 6),
+        "html_image_count": html_image_count,
+        "pdf_image_objects": image_objects,
+    }
+
+
+def _validate_smtp_payload_before_send(
+    *,
+    payload: Dict[str, Any],
+    destination: str,
+    pdf_attachment_required: bool,
+    adapter: Any,
+) -> Dict[str, Any]:
+    """Validate the exact final HTML, PDF attachment, and adapter-built MIME tree."""
+    if not isinstance(payload, dict):
+        raise ValueError("PRE_SEND_EMAIL_INVALID: SMTP payload is not an object")
+    body = payload.get("body")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("PRE_SEND_EMAIL_INVALID: HTML body is empty")
+    if str(payload.get("content_type") or "").casefold() != "html":
+        raise ValueError("PRE_SEND_EMAIL_INVALID: SMTP content_type is not html")
+    if not re.search(r"(?i)<(?:html|body|p|div|h[1-6]|table|ul|ol)\b", body):
+        raise ValueError("PRE_SEND_EMAIL_INVALID: body has no structural HTML")
+
+    attachments = normalise_attachments(payload.get("attachments") or [])
+    pdf_attachments = [
+        item for item in attachments
+        if str(item.get("content_type") or "").casefold() == "application/pdf"
+    ]
+    if pdf_attachment_required and len(pdf_attachments) != 1:
+        raise ValueError(
+            f"PRE_SEND_PDF_INVALID: expected exactly one PDF attachment, found {len(pdf_attachments)}"
+        )
+
+    metrics: Dict[str, Any] = {
+        "html_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "html_bytes": len(body.encode("utf-8")),
+        "pdf_attachment_count": len(pdf_attachments),
+        "mime_validated": False,
+    }
+    expected_pdf_hash = ""
+    if pdf_attachments:
+        pdf_attachment = pdf_attachments[0]
+        pdf_bytes = base64.b64decode(pdf_attachment["content"], validate=True)
+        metrics.update(_validate_pdf_bytes_against_html(pdf_bytes, body))
+        expected_pdf_hash = metrics["pdf_sha256"]
+        declared_hash = str(pdf_attachment.get("sha256") or "")
+        if declared_hash and declared_hash != expected_pdf_hash:
+            raise ValueError("PRE_SEND_PDF_INVALID: declared attachment hash mismatch")
+
+    build_message = getattr(adapter, "_build_message", None)
+    if callable(build_message):
+        mime_message = build_message(destination, payload)
+        mime_types = [part.get_content_type() for part in mime_message.walk()]
+        html_parts = [
+            part for part in mime_message.walk()
+            if part.get_content_type() == "text/html"
+        ]
+        mime_pdfs = [
+            part.get_payload(decode=True)
+            for part in mime_message.walk()
+            if part.get_content_type() == "application/pdf"
+            and "attachment" in str(part.get("Content-Disposition") or "").casefold()
+        ]
+        if not html_parts:
+            raise ValueError("PRE_SEND_MIME_INVALID: MIME tree has no HTML alternative")
+        if pdf_attachment_required and len(mime_pdfs) != 1:
+            raise ValueError(
+                f"PRE_SEND_MIME_INVALID: expected one MIME PDF attachment, found {len(mime_pdfs)}"
+            )
+        mime_pdf_hash = hashlib.sha256(mime_pdfs[0]).hexdigest() if mime_pdfs else ""
+        if expected_pdf_hash and mime_pdf_hash != expected_pdf_hash:
+            raise ValueError("PRE_SEND_MIME_INVALID: MIME PDF bytes differ from delivery attachment")
+        mime_html = html_parts[0].get_payload(decode=True) or b""
+        metrics.update({
+            "mime_validated": True,
+            "mime_content_types": mime_types,
+            "mime_html_sha256": hashlib.sha256(mime_html).hexdigest(),
+            "mime_pdf_sha256": mime_pdf_hash,
+            "mime_to": str(mime_message.get("To") or ""),
+            "mime_sha256": hashlib.sha256(mime_message.as_bytes()).hexdigest(),
+        })
+        if metrics["mime_to"] != destination:
+            raise ValueError("PRE_SEND_MIME_INVALID: MIME recipient differs from delivery recipient")
+    return metrics
 
 
 SLACK_SUMMARY_LINK_MIN_PREVIEW_CHARS = 900
@@ -284,6 +430,55 @@ class DeliveryProcessorLoop:
         # Register channels from database
         self._register_channels()
 
+    def _merge_user_profile_preferences(
+        self,
+        destination_preferences: Optional[Dict[str, Any]],
+        user_id: Optional[int],
+        delivery_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fill missing per-recipient preferences from the resolved user profile."""
+        if not user_id:
+            return destination_preferences
+
+        try:
+            user_pref_row = self.db.fetchone(
+                "SELECT language, content_style, pdf_preference FROM users WHERE id = ?",
+                (user_id,),
+            )
+        except Exception as preference_infer_error:
+            delivery_label = f"Delivery {delivery_id}: " if delivery_id is not None else ""
+            logger.warning(
+                f"{delivery_label}failed to infer destination preferences from user profile: "
+                f"{preference_infer_error}"
+            )
+            return destination_preferences
+
+        inferred_preferences: Dict[str, Any] = {}
+        if user_pref_row:
+            if user_pref_row.get("language"):
+                inferred_preferences["language"] = user_pref_row.get("language")
+            if user_pref_row.get("content_style"):
+                inferred_preferences["content_style"] = user_pref_row.get("content_style")
+            if user_pref_row.get("pdf_preference"):
+                inferred_preferences["pdf_preference"] = user_pref_row.get("pdf_preference")
+
+        if not inferred_preferences:
+            return destination_preferences
+
+        if destination_preferences is None:
+            return inferred_preferences
+
+        if not isinstance(destination_preferences, dict):
+            return destination_preferences
+
+        merged_preferences = dict(destination_preferences)
+        changed = False
+        for pref_key, pref_value in inferred_preferences.items():
+            if not merged_preferences.get(pref_key):
+                merged_preferences[pref_key] = pref_value
+                changed = True
+        return merged_preferences if changed else destination_preferences
+
     async def start(self):
         """Start the delivery worker"""
         if self.running:
@@ -403,7 +598,7 @@ class DeliveryProcessorLoop:
     @staticmethod
     def _utcnow_naive() -> datetime:
         """Return a naive UTC timestamp suitable for SQLite CURRENT_TIMESTAMP comparisons."""
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
 
     @staticmethod
     def _utcnow_aware() -> datetime:
@@ -656,7 +851,7 @@ class DeliveryProcessorLoop:
                         "delivery_id": delivery_id,
                         "message_id": tracking_id,
                         "recipient": actual_destination,
-                        "timestamp": confirm_result.timestamp or datetime.utcnow().isoformat(),
+                        "timestamp": confirm_result.timestamp or datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                         "source": "imap_mailbox_confirmation",
                     },
                 )
@@ -1280,28 +1475,13 @@ class DeliveryProcessorLoop:
             except Exception:
                 pass
 
-        # If destination preferences were not provided in delivery metadata, infer
-        # baseline preferences from user profile so fallback formatting still
-        # honours language/content_style (e.g. AT1.13 HTML preference).
-        if destination_preferences is None and user_id:
-            try:
-                user_pref_row = self.db.fetchone(
-                    "SELECT language, content_style FROM users WHERE id = ?",
-                    (user_id,),
-                )
-                inferred_preferences: Dict[str, Any] = {}
-                if user_pref_row:
-                    if user_pref_row.get("language"):
-                        inferred_preferences["language"] = user_pref_row.get("language")
-                    if user_pref_row.get("content_style"):
-                        inferred_preferences["content_style"] = user_pref_row.get("content_style")
-                if inferred_preferences:
-                    destination_preferences = inferred_preferences
-            except Exception as preference_infer_error:
-                logger.warning(
-                    f"Delivery {delivery_id}: failed to infer destination preferences from user profile: "
-                    f"{preference_infer_error}"
-                )
+        # Fill missing baseline preferences from the resolved user profile so fallback
+        # formatting honours language/content_style and per-recipient PDF preference.
+        destination_preferences = self._merge_user_profile_preferences(
+            destination_preferences,
+            user_id,
+            delivery_id,
+        )
 
         async def _translate_with_guard(
             source_text: str,
@@ -5840,6 +6020,23 @@ class DeliveryProcessorLoop:
                         payload_body = f"<html><body>{body_stripped}</body></html>" if body_stripped else "<html><body></body></html>"
                     formatted_payload["body"] = payload_body
                     formatted_payload["content_type"] = "html"
+                elif pref_content_style == "plain" and isinstance(payload_body, str) and payload_body:
+                    # W28E-1889 R2 (AT1.5): a plain-text preference must not ship
+                    # HTML. Some upstream paths retain content_type=html (and thus
+                    # an <html><body> wrapper / <a> links). Enforce the plain-text
+                    # contract deterministically: strip tags to text and label it
+                    # text/plain so the reader gets exactly what they asked for.
+                    body_lower = payload_body.lower()
+                    if any(tag in body_lower for tag in ["<html", "<body", "<p", "<div", "<br", "<a ", "<h1", "<h2", "<h3", "<ul", "<ol", "<li"]):
+                        import html as html_module
+                        text = re.sub(r"<a [^>]*href=[\"']([^\"']+)[\"'][^>]*>.*?</a>", r"\1", payload_body, flags=re.IGNORECASE | re.DOTALL)
+                        text = re.sub(r"</?(p|div|h[1-6]|ul|ol|li)[^>]*>", "\n", text, flags=re.IGNORECASE)
+                        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+                        text = re.sub(r"<[^>]+>", "", text)
+                        text = html_module.unescape(text)
+                        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+                        formatted_payload["body"] = text
+                        formatted_payload["content_type"] = "text"
         except Exception as final_smtp_html_guard_err:
             logger.warning(f"[FINAL SMTP HTML GUARD] Failed: {final_smtp_html_guard_err}")
 
@@ -5996,6 +6193,43 @@ class DeliveryProcessorLoop:
         formatted_payload = await self._maybe_publish_external_assets(
             formatted_payload, destination_preferences, actual_destination, channel, group_id, message)
 
+        if channel_type == "smtp":
+            preference = str(
+                (destination_preferences or {}).get("pdf_preference") or ""
+            ).strip().casefold()
+            pdf_attachment_required = bool(pdf_requested) and (
+                preference in {"attach", "attachment", "both"}
+                or (not preference and bool((destination_preferences or {}).get("generate_pdf")))
+            )
+            pre_send_integrity = _validate_smtp_payload_before_send(
+                payload=formatted_payload,
+                destination=actual_destination,
+                pdf_attachment_required=pdf_attachment_required,
+                adapter=adapter,
+            )
+            metadata_raw = delivery.get("metadata_json")
+            try:
+                metadata = (
+                    json.loads(metadata_raw)
+                    if isinstance(metadata_raw, str)
+                    else dict(metadata_raw or {})
+                )
+            except Exception:
+                metadata = {}
+            metadata["pre_send_integrity"] = pre_send_integrity
+            metadata_json = json.dumps(metadata, sort_keys=True)
+            self.delivery_repo.update_metadata(
+                delivery_id=delivery_id,
+                metadata_json=metadata_json,
+            )
+            delivery["metadata_json"] = metadata_json
+            # Persist the exact post-publication payload whose hashes and MIME
+            # structure were just validated, not an earlier pre-rewrite copy.
+            self.delivery_repo.update_payload(
+                delivery_id=delivery_id,
+                personalised_payload=json.dumps(formatted_payload),
+            )
+
         delivery_dict = {
             'destination': actual_destination,
             'personalised_payload': json.dumps(formatted_payload) if isinstance(formatted_payload, (dict, list)) else formatted_payload,
@@ -6131,6 +6365,7 @@ class DeliveryProcessorLoop:
         # multipart/related and the HTML body's <img src="cid:NAME"> tags render
         # inline in Gmail/Outlook/Apple Mail. Absence preserves current behaviour.
         inline_images = self._extract_inline_images_from_message(message)
+        explicit_attachments = self._extract_attachments_from_message(message)
 
         # Extract subject from message, variables, or formatted content
         subject = None
@@ -6160,7 +6395,7 @@ class DeliveryProcessorLoop:
                             break
 
         content_type = "html" if content_style_pref == "html" else "text"
-        attachments = []
+        attachments = list(explicit_attachments)
 
         # Add PDF attachment if available and preference is attach (Phase 2.4)
         if pdf_info and pdf_info.get('should_attach') and self.pdf_helper:
@@ -6172,12 +6407,13 @@ class DeliveryProcessorLoop:
                 )
                 if pdf_attachment:
                     # Convert bytes to base64 string for email attachment
-                    import base64
+                    pdf_bytes = pdf_attachment['content']
                     attachments.append({
                         'filename': pdf_attachment['filename'],
-                        'content': base64.b64encode(pdf_attachment['content']).decode('utf-8'),
+                        'content': base64.b64encode(pdf_bytes).decode('utf-8'),
                         'content_type': pdf_attachment['content_type'],
-                        'encoding': 'base64'
+                        'encoding': 'base64',
+                        'sha256': hashlib.sha256(pdf_bytes).hexdigest(),
                     })
             except Exception as e:
                 logger.warning(f"Failed to prepare PDF attachment: {e}")
@@ -6394,6 +6630,11 @@ class DeliveryProcessorLoop:
             # key when present so non-image deliveries are byte-for-byte unchanged.
             if inline_images and not payload.get("inline_images"):
                 payload["inline_images"] = inline_images
+            if explicit_attachments:
+                payload["attachments"] = self._merge_explicit_attachments(
+                    payload.get("attachments"),
+                    explicit_attachments,
+                )
             return payload
 
         # If no body found, use original content
@@ -6695,6 +6936,54 @@ class DeliveryProcessorLoop:
                         ):
                             collected.append(image)
         return resolve_inline_image_references(collected, config=self.config)
+
+    def _extract_attachments_from_message(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Collect explicit request attachments from message content blocks."""
+        if not isinstance(message, dict):
+            return []
+        collected: List[Dict[str, Any]] = []
+        try:
+            content_json = message.get('content_json')
+            blocks = json.loads(content_json) if isinstance(content_json, str) else content_json
+        except Exception:
+            blocks = None
+        if isinstance(blocks, list):
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_attachments = block.get('attachments')
+                if isinstance(block_attachments, list):
+                    collected.extend(
+                        attachment
+                        for attachment in block_attachments
+                        if isinstance(attachment, dict)
+                    )
+        return normalise_attachments(collected)
+
+    def _merge_explicit_attachments(
+        self,
+        payload_attachments: Any,
+        explicit_attachments: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Merge explicit request attachments into an email payload without duplicates."""
+        merged = normalise_attachments(payload_attachments)
+        seen = {
+            (
+                str(attachment.get("filename") or ""),
+                str(attachment.get("sha256") or attachment.get("content") or ""),
+            )
+            for attachment in merged
+            if isinstance(attachment, dict)
+        }
+        for attachment in explicit_attachments:
+            key = (
+                str(attachment.get("filename") or ""),
+                str(attachment.get("sha256") or attachment.get("content") or ""),
+            )
+            if key not in seen:
+                merged.append(dict(attachment))
+                seen.add(key)
+        return merged
 
     def _format_content_for_slack(
         self,

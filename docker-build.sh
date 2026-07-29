@@ -100,6 +100,12 @@ else
     exit 2
   fi
 fi
+# Vault stores the repository origin.  pip package discovery is rooted at the
+# PEP 503 ``/simple/`` endpoint; without this normalization public packages can
+# mask the defect while private Cloud-Dog pins appear unavailable.
+if [[ "${PYPI_URL%/}" != */simple ]]; then
+  PYPI_URL="${PYPI_URL%/}/simple/"
+fi
 PYPI_USERNAME="${PYPI_USERNAME:-}"
 PYPI_PASSWORD="${PYPI_PASSWORD:-}"
 
@@ -196,24 +202,12 @@ fi
 
 # ── W28C-1719 publish-before-pin guard + build-provenance revision label (fail-closed) ──
 _PBP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-CANONICAL_SOURCE_FALLBACK_MANIFEST="${_PBP_DIR}/working/evidence/W28E-1889/current/package-source-fallback/package-source-fallback-manifest.tsv"
-CANONICAL_SOURCE_FALLBACK_ARGS=()
-if [[ -f "${CANONICAL_SOURCE_FALLBACK_MANIFEST}" ]]; then
-  # The guard below validates the manifest, every wheel and every sdist before
-  # the build may consume this narrowly-scoped fallback.  The Dockerfile uses
-  # it only for the nine cloud-dog-* pins; all other dependencies keep the
-  # existing single approved internal index.
-  CANONICAL_SOURCE_FALLBACK_ARGS=(--build-arg CANONICAL_SOURCE_FALLBACK=1)
-fi
-# W28A-SEC-R18 public-boundary scrub: the publish-before-pin guard is internal-only
-# tooling (hardcodes the internal package index host) and is excluded from the public
-# mirror. On the public boundary it is absent; skip it when not present. Internal
-# builds (guard present) keep the fail-closed behaviour unchanged.
-if [[ -x "${_PBP_DIR}/scripts/publish-before-pin-guard.sh" ]]; then
-  "${_PBP_DIR}/scripts/publish-before-pin-guard.sh" "${_PBP_DIR}" || exit $?
-else
-  echo "publish-before-pin guard absent (public boundary) — skipping."
-fi
+# W28E-1889 R2: the canonical-source fallback (sealed wheels under working/evidence)
+# is removed — it is evidence, not package source, and made origin/main unbuildable
+# from a clean checkout. The guard below proves every internal pin resolves from the
+# single approved internal index cache-cold; the Dockerfile installs those pins from
+# that index only. No evidence artifact participates in the build.
+"${_PBP_DIR}/scripts/publish-before-pin-guard.sh" "${_PBP_DIR}" || exit $?
 _PBP_REV="$(git -C "${_PBP_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 # W28E-1863 fix-wave-d (WSC-014): propagate build identity to the image so the
 # Dockerfile can stamp OCI labels + runtime ENV for _build_identity() / /version.
@@ -233,6 +227,12 @@ fi
 
 # The wrapper must inspect and return the build child's exact status itself;
 # temporarily disable errexit so pipefail cannot bypass cleanup and reporting.
+# BuildKit/pip may echo an authenticated index URL.  Keep the wrapper's
+# durable diagnostic log values-free while preserving the build exit status.
+redact_build_output() {
+  sed -E 's#(https?://)[^@[:space:]]+@#\1<redacted>@#g'
+}
+
 set +e
 docker buildx build \
   --label "org.opencontainers.image.revision=${_PBP_REV}" \
@@ -242,7 +242,6 @@ docker buildx build \
   -f "${DOCKERFILE}" \
   --secret id=pip_conf,src="${PIP_CONF}" \
   "${PUBLIC_INDEX_ARGS[@]}" \
-  "${CANONICAL_SOURCE_FALLBACK_ARGS[@]}" \
   --build-arg HTTP_PROXY="${HTTP_PROXY:-}" \
   --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" \
   --build-arg NO_PROXY="${NO_PROXY:-}" \
@@ -253,7 +252,7 @@ docker buildx build \
   --build-arg SOURCE_BRANCH="${SOURCE_BRANCH}" \
   --build-arg BUILD_DATE="${BUILD_DATE}" \
   -t "${BUILD_TAG}" \
-  . 2>&1 | tee "${LOG_FILE}"
+  . 2>&1 | redact_build_output | tee "${LOG_FILE}"
 
 BUILD_STATUS=${PIPESTATUS[0]}
 set -e

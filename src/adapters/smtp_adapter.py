@@ -51,6 +51,16 @@ from .base import ChannelAdapter, SendResult, ConfirmResult, ErrorClass
 from src.config import get_config
 
 
+def _mime_type_parts(content_type: str) -> tuple[str, str]:
+    value = (content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    if "/" not in value:
+        return ("application", "octet-stream")
+    maintype, subtype = value.split("/", 1)
+    if not maintype or not subtype:
+        return ("application", "octet-stream")
+    return (maintype, subtype)
+
+
 class SMTPAdapter(ChannelAdapter):
     """
     Real SMTP Adapter for sending emails via SMTP servers.
@@ -441,31 +451,29 @@ class SMTPAdapter(ChannelAdapter):
                 attach_content = attachment.get('content', '')
                 attach_content_type = attachment.get('content_type', 'text/plain')
                 encoding = attachment.get('encoding', 'utf-8')  # Support base64 encoding for PDFs
+                maintype, subtype = _mime_type_parts(attach_content_type)
                 
                 # Create attachment
                 if encoding == 'base64':
                     # For base64-encoded content (e.g., PDFs)
                     import base64
-                    part = MIMEBase('application', 'octet-stream')
+                    part = MIMEBase(maintype, subtype)
                     part.set_payload(base64.b64decode(attach_content))
                     encoders.encode_base64(part)
                     part.add_header(
                         'Content-Disposition',
                         f'attachment; filename= {filename}'
                     )
-                    part.add_header('Content-Type', attach_content_type)
                     msg.attach(part)
                 else:
                     # For text content (original behavior)
-                    part = MIMEBase('application', 'octet-stream')
+                    part = MIMEBase(maintype, subtype)
                     part.set_payload(attach_content.encode('utf-8'))
                     encoders.encode_base64(part)
                     part.add_header(
                         'Content-Disposition',
                         f'attachment; filename= {filename}'
                     )
-                    if attach_content_type:
-                        part.add_header('Content-Type', attach_content_type)
                     msg.attach(part)
         else:
             # No attachments - use alternative multipart
@@ -656,27 +664,25 @@ class SMTPAdapter(ChannelAdapter):
                 attach_content = attachment.get('content', '')
                 attach_content_type = attachment.get('content_type', 'text/plain')
                 encoding = attachment.get('encoding', 'utf-8')
+                maintype, subtype = _mime_type_parts(attach_content_type)
 
                 if encoding == 'base64':
-                    part = MIMEBase('application', 'octet-stream')
+                    part = MIMEBase(maintype, subtype)
                     part.set_payload(base64.b64decode(attach_content))
                     encoders.encode_base64(part)
                     part.add_header(
                         'Content-Disposition',
                         f'attachment; filename= {filename}'
                     )
-                    part.add_header('Content-Type', attach_content_type)
                     msg.attach(part)
                 else:
-                    part = MIMEBase('application', 'octet-stream')
+                    part = MIMEBase(maintype, subtype)
                     part.set_payload(attach_content.encode('utf-8'))
                     encoders.encode_base64(part)
                     part.add_header(
                         'Content-Disposition',
                         f'attachment; filename= {filename}'
                     )
-                    if attach_content_type:
-                        part.add_header('Content-Type', attach_content_type)
                     msg.attach(part)
             return msg
 

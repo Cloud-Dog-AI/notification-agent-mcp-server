@@ -25,6 +25,9 @@ Related Architecture: CC5.1.6
 Related Tests: AT1.4a-AT1.4k
 
 Recent Changes (max 10):
+- W28E-1889-R2: use shared build_public_message_url (W28A-309) instead of bespoke
+  URL construction — fixes doubled /messages/messages/{id} (307 on PDF download,
+  AT1.19a) and removes the §4 duplication of message_url.py.
 - (Initial implementation for AT1.4 test suite)
 **************************************************
 """
@@ -34,6 +37,7 @@ from typing import Dict, Any
 
 from .base import BaseChannelAdapter, SendResult, ConfirmResult, ErrorClass
 from ..config import get_config
+from ..core.formatters.message_url import build_public_message_url
 from ..utils.logger import get_context_logger, get_logger
 
 logger = get_logger(__name__)
@@ -133,12 +137,15 @@ class LoopBackAdapter(BaseChannelAdapter):
             if not message_guid and not message_id:
                 raise ValueError("Loop-back adapter requires message_guid or message_id in delivery")
             
-            # Construct message center URL
-            if message_guid:
-                message_url = f"{self.base_url.rstrip('/')}{self.message_path_template.format(message_guid=message_guid)}"
-            else:
-                # Fallback to message_id if no GUID
-                message_url = f"{self.base_url.rstrip('/')}/messages/{message_id}"
+            # Construct message center URL via the shared canonical builder
+            # (W28A-309 message_url.build_public_message_url) so the loop-back link
+            # matches the email/Slack "view online" URL exactly and never doubles the
+            # /messages segment (messages.base_url already ends in /messages).
+            message_url = build_public_message_url(
+                get_config(),
+                message_guid=str(message_guid) if message_guid else None,
+                message_id=str(message_id) if message_id else None,
+            )
             
             # Extract language from metadata for URL
             metadata_str = delivery.get("metadata_json", "{}")

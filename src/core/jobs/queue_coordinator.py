@@ -257,13 +257,22 @@ class QueueCoordinator:
                     user = None
                 if user:
                     metadata_payload["user_id"] = user.get("id")
-                    if "preferences" not in metadata_payload:
-                        inferred_preferences: Dict[str, Any] = {}
-                        if user.get("language"):
-                            inferred_preferences["language"] = user.get("language")
-                        if user.get("content_style"):
-                            inferred_preferences["content_style"] = user.get("content_style")
-                        if inferred_preferences:
+                    inferred_preferences: Dict[str, Any] = {}
+                    if user.get("language"):
+                        inferred_preferences["language"] = user.get("language")
+                    if user.get("content_style"):
+                        inferred_preferences["content_style"] = user.get("content_style")
+                    if user.get("pdf_preference"):
+                        inferred_preferences["pdf_preference"] = user.get("pdf_preference")
+                    if inferred_preferences:
+                        existing_preferences = metadata_payload.get("preferences")
+                        if isinstance(existing_preferences, dict):
+                            merged_preferences = dict(existing_preferences)
+                            for pref_key, pref_value in inferred_preferences.items():
+                                if not merged_preferences.get(pref_key):
+                                    merged_preferences[pref_key] = pref_value
+                            metadata_payload["preferences"] = merged_preferences
+                        elif "preferences" not in metadata_payload:
                             metadata_payload["preferences"] = inferred_preferences
 
             metadata_json = json.dumps(metadata_payload or {})

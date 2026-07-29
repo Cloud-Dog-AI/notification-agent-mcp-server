@@ -200,11 +200,20 @@ _known_webui_exact_paths = {
     "/messages",
     "/deliveries",
     "/prompts",
+    # W28E-1889 R2: the app's own nav links (static_handler /users,/groups;
+    # proxy_routes /users/add) and page handlers (proxy_routes /groups/add,
+    # /groups/{id}/edit, /groups/{id}/assign-owner) use the non-/admin-prefixed
+    # paths, but they were absent from the SPA known-path set, so the middleware
+    # 404'd them — real broken nav for Users/Groups/Create-User. Recognise them.
+    "/users",
+    "/groups",
 }
 
 _known_webui_prefixes = (
     "/admin/users/",
     "/admin/groups/",
+    "/users/",
+    "/groups/",
     "/channels/",
     "/messages/",
     "/deliveries/",

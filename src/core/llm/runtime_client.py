@@ -34,6 +34,7 @@ import asyncio
 import inspect
 from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
+import re
 from threading import Thread as _Thread, Lock as _Lock, Event as _Event
 import uuid
 from typing import Any, Dict, Optional
@@ -76,6 +77,46 @@ _STRUCTURED_SYSTEM_PROMPT = (
     "Put the complete formatted, translated, converted, or summarised result in "
     "the content field. Do not include analysis, reasoning, a preamble, or extra fields."
 )
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_json_object_candidates(raw: str):
+    """Yield JSON objects genuinely present in a raw model response.
+
+    The sealed cloud-dog-llm 0.4.1 Ollama provider does not forward the
+    structured ``response_format`` to the backend, so an unconstrained model can
+    wrap an otherwise schema-valid ``{"content": ...}`` object in a markdown
+    fence, a ``<think>`` block, or surrounding prose (W28E-1889 AT1.16a). This
+    EXTRACTS candidate objects that the model actually produced — it never
+    fabricates or repairs content — and the caller still applies the exact
+    schema-shape validation rule unchanged.
+    """
+    if not raw:
+        return
+    text = _THINK_BLOCK_RE.sub("", raw).strip()
+    chunks = [m.group(1).strip() for m in _CODE_FENCE_RE.finditer(text)]
+    chunks.append(text)
+    decoder = json.JSONDecoder()
+    seen: set = set()
+    for chunk in chunks:
+        idx = 0
+        while True:
+            brace = chunk.find("{", idx)
+            if brace == -1:
+                break
+            try:
+                obj, end = decoder.raw_decode(chunk, brace)
+            except ValueError:
+                idx = brace + 1
+                continue
+            if isinstance(obj, dict):
+                key = json.dumps(obj, sort_keys=True, default=str)[:2000]
+                if key not in seen:
+                    seen.add(key)
+                    yield obj
+            idx = max(end, brace + 1)
 
 
 class LLMManager:
@@ -442,10 +483,16 @@ class LLMManager:
             parsed = getattr(candidate, "parsed_output", None)
             error = getattr(candidate, "structured_error", None)
             if parsed is None and not error:
-                try:
-                    parsed = json.loads(str(getattr(candidate, "content", "")))
-                except (TypeError, ValueError):
-                    parsed = None
+                raw = str(getattr(candidate, "content", "") or "")
+                for extracted in _extract_json_object_candidates(raw):
+                    if isinstance(extracted, dict) and set(extracted) == {"content"}:
+                        parsed = extracted
+                        break
+                else:
+                    try:
+                        parsed = json.loads(raw)
+                    except (TypeError, ValueError):
+                        parsed = None
             if error or not isinstance(parsed, dict) or set(parsed) != {"content"}:
                 return None
             content = parsed.get("content")

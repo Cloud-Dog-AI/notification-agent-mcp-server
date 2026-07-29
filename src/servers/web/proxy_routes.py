@@ -2,6 +2,7 @@
 """APIRouter routes extracted from web_server.py: backend proxy and test routes."""
 
 import hashlib
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Depends
 from . import web_server as _web
@@ -105,7 +106,7 @@ def _log_entries(log_type: str, lines: int) -> list[dict[str, str]]:
         raw_lines = _fs.read_bytes(log_path_str).decode("utf-8", errors="ignore").splitlines(True)
     except Exception as exc:
         return [{
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "level": "ERROR",
             "message": f"Could not read {log_path}: {exc}",
             "source": log_type,
@@ -5760,7 +5761,7 @@ async def proxy_idam_compact_api_keys(user: str = Depends(get_current_user)):
     return await api_request("GET", "/api/v1/admin/api-keys")
 
 
-@router.api_route("/webapi/v1/admin/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@router.api_route("/webapi/v1/admin/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
 async def proxy_idam_admin(request: Request, path: str, user: str = Depends(get_current_user)):
     method = request.method.upper()
     data = None
@@ -5858,7 +5859,7 @@ async def proxy_idam_admin(request: Request, path: str, user: str = Depends(get_
 
 # W28A-876: forward the canonical /idam/v1/* surface (resource-registry + rbac-bindings)
 # to the api server's mounted shared cloud_dog_idam idam_v1_router, so the RBAC page resolves.
-@router.api_route("/webapi/v1/idam/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@router.api_route("/webapi/v1/idam/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
 async def proxy_idam_v1(request: Request, path: str, user: str = Depends(get_current_user)):
     method = request.method.upper()
     data = None

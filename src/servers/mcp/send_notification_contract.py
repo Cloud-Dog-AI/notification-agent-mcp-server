@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Awaitable, Callable
 
+from ...core.attachments import normalise_attachments
 from ...core.inline_images import normalise_inline_images
 
 SEND_NOTIFICATION_INPUT_SCHEMA: dict[str, Any] = {
@@ -45,8 +46,37 @@ SEND_NOTIFICATION_INPUT_SCHEMA: dict[str, Any] = {
                     "markdown": {"type": "string", "description": "Alias for a markdown body"},
                     "subject": {"type": "string", "description": "Optional message subject"},
                     "metadata": {"type": "object", "description": "Optional content metadata"},
+                    "attachments": {
+                        "type": "array",
+                        "description": "Optional explicit file attachments carried through normal delivery",
+                        "items": {"type": "object"},
+                    },
                 },
                 "required": ["type", "body"],
+            },
+        },
+        "attachments": {
+            "type": "array",
+            "description": (
+                "Optional explicit file attachments threaded onto the first content "
+                "block. Binary attachments must provide base64 content and may carry "
+                "sha256 for fail-closed byte integrity validation."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Attachment filename"},
+                    "content_type": {"type": "string", "description": "MIME type, e.g. application/pdf"},
+                    "content": {"type": "string", "description": "Base64-encoded attachment bytes"},
+                    "data": {"type": "string", "description": "Alias for content"},
+                    "encoding": {"type": "string", "description": "base64 or utf-8"},
+                    "sha256": {"type": "string", "description": "Optional expected SHA-256 of decoded bytes"},
+                },
+                "required": ["filename"],
+                "oneOf": [
+                    {"required": ["content"]},
+                    {"required": ["data"]},
+                ],
             },
         },
         "inline_images": {
@@ -226,6 +256,15 @@ def build_send_notification_api_payload(arguments: dict[str, Any]) -> dict[str, 
         first_block = content_blocks[0]
         if isinstance(first_block, dict) and not first_block.get("inline_images"):
             first_block["inline_images"] = inline_images
+
+    attachments = normalise_attachments(arguments.get("attachments"))
+    if attachments and content_blocks:
+        first_block = content_blocks[0]
+        if isinstance(first_block, dict) and not first_block.get("attachments"):
+            first_block["attachments"] = attachments
+    for block in content_blocks:
+        if isinstance(block, dict) and block.get("attachments") not in (None, ""):
+            block["attachments"] = normalise_attachments(block.get("attachments"))
 
     payload: dict[str, Any] = {
         "destinations": [_coerce_destination(dest) for dest in destinations],
